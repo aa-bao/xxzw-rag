@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.api.router_auth import router as auth_router
+from src.api.router_kb import router as kb_router
 from src.shared.config import Settings
 from src.shared.errors import AppError
 
@@ -19,6 +20,7 @@ def create_app(
         app.state.session_factory = session_factory
 
     app.include_router(auth_router)
+    app.include_router(kb_router)
 
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
