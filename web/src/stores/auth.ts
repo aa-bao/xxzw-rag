@@ -8,6 +8,12 @@ export const useAuthStore = defineStore('auth', () => {
   const initialized = ref(false)
 
   async function init() {
+    // Dev bypass: skip auth check when VITE_DEV_BYPASS_AUTH is set
+    if (import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true') {
+      user.value = { id: 1, username: 'preview', role: 'user' }
+      initialized.value = true
+      return
+    }
     try {
       const resp = await api.me()
       user.value = resp.data

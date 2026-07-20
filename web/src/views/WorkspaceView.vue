@@ -1,85 +1,85 @@
 <template>
-  <aside class="sidebar">
-    <div class="sidebar__brand">
-      <span class="sidebar__logo">—</span>
-      RAG
-    </div>
-
-    <nav class="sidebar__user" v-if="auth.user">
-      <span class="sidebar__username">{{ auth.user.username }}</span>
-      <el-button text size="small" @click="handleLogout">退出</el-button>
-    </nav>
-
-    <section class="sidebar__kbs">
-      <div class="sidebar__section-header">
-        <span>知识库</span>
-        <el-button text size="small" @click="showCreateKb = true">+ 新建</el-button>
+  <div class="workspace-page">
+    <aside class="sidebar">
+      <div class="sidebar__brand">
+        <span class="sidebar__logo">—</span>
+        RAG
       </div>
-      <ul class="sidebar__kb-list" v-if="kbs.length">
-        <li
-          v-for="kb in kbs"
-          :key="kb.id"
-          class="sidebar__kb-item"
-          :class="{ 'sidebar__kb-item--active': selectedKb?.id === kb.id }"
-          @click="selectKb(kb)"
-        >
-          {{ kb.name }}
-        </li>
-      </ul>
-      <p class="sidebar__empty" v-else>暂无知识库</p>
-    </section>
-  </aside>
 
-  <main class="workspace">
-    <template v-if="!selectedKb">
-      <div class="workspace__empty">
-        <h2>选择一个知识库</h2>
-        <p>从左侧列表选择或创建一个知识库开始</p>
-      </div>
-    </template>
+      <nav class="sidebar__user" v-if="auth.user">
+        <span class="sidebar__username">{{ auth.user.username }}</span>
+        <el-button text size="small" @click="handleLogout">退出</el-button>
+      </nav>
 
-    <template v-else>
-      <!-- Upload Zone -->
-      <section class="workspace__upload">
-        <el-upload
-          :auto-upload="false"
-          :show-file-list="false"
-          :on-change="handleFileChange"
-          accept=".txt,text/plain"
-          drag
-        >
-          <div class="workspace__upload-inner">
-            <p class="workspace__upload-label">拖拽 TXT 文件到此处，或点击上传</p>
-            <p class="workspace__upload-hint">仅支持 UTF-8 编码的 .txt 文件</p>
-          </div>
-        </el-upload>
-        <p v-if="uploading" class="workspace__upload-status">上传中&hellip;</p>
-        <p v-if="uploadError" class="workspace__upload-error">{{ uploadError }}</p>
-        <p v-if="uploadOk" class="workspace__upload-ok">文件已提交，正在入库&hellip;</p>
+      <section class="sidebar__kbs">
+        <div class="sidebar__section-header">
+          <span>知识库</span>
+          <el-button text size="small" @click="showCreateKb = true">+ 新建</el-button>
+        </div>
+        <ul class="sidebar__kb-list" v-if="kbs.length">
+          <li
+            v-for="kb in kbs"
+            :key="kb.id"
+            class="sidebar__kb-item"
+            :class="{ 'sidebar__kb-item--active': selectedKb?.id === kb.id }"
+            @click="selectKb(kb)"
+          >
+            {{ kb.name }}
+          </li>
+        </ul>
+        <p class="sidebar__empty" v-else>暂无知识库</p>
       </section>
+    </aside>
 
-      <!-- Chat Panel -->
-      <section class="workspace__chat">
-        <ChatPanel :kb-id="selectedKb.id" :key="selectedKb.id" />
-      </section>
-    </template>
-  </main>
+    <main class="workspace">
+      <template v-if="!selectedKb">
+        <div class="workspace__empty">
+          <h2>选择一个知识库</h2>
+          <p>从左侧列表选择或创建一个知识库开始</p>
+        </div>
+      </template>
 
-  <!-- Create KB Dialog -->
-  <el-dialog v-model="showCreateKb" title="新建知识库" width="420px">
-    <el-form :model="kbForm" label-position="top">
-      <el-form-item label="名称">
-        <el-input v-model="kbForm.name" placeholder="给知识库起个名字" />
-      </el-form-item>
-      <el-form-item label="描述（可选）">
-        <el-input v-model="kbForm.desc" type="textarea" :rows="2" placeholder="用一句话描述内容" />
-      </el-form-item>
-    </el-form>
-    <template #footer>
-      <el-button @click="showCreateKb = false">取消</el-button>
-      <el-button type="primary" :loading="creatingKb" @click="handleCreateKb">创建</el-button>
-    </template>
-  </el-dialog>
+      <template v-else>
+        <section class="workspace__upload">
+          <el-upload
+            :auto-upload="false"
+            :show-file-list="false"
+            :on-change="handleFileChange"
+            accept=".txt,text/plain"
+            drag
+          >
+            <div class="workspace__upload-inner">
+              <p class="workspace__upload-label">拖拽 TXT 文件到此处，或点击上传</p>
+              <p class="workspace__upload-hint">仅支持 UTF-8 编码的 .txt 文件</p>
+            </div>
+          </el-upload>
+          <p v-if="uploading" class="workspace__upload-status">上传中&hellip;</p>
+          <p v-if="uploadError" class="workspace__upload-error">{{ uploadError }}</p>
+          <p v-if="uploadOk" class="workspace__upload-ok">文件已提交，正在入库&hellip;</p>
+        </section>
+
+        <section class="workspace__chat">
+          <ChatPanel :kb-id="selectedKb.id" :key="selectedKb.id" />
+        </section>
+      </template>
+    </main>
+
+    <!-- Create KB Dialog -->
+    <el-dialog v-model="showCreateKb" title="新建知识库" width="420px">
+      <el-form :model="kbForm" label-position="top">
+        <el-form-item label="名称">
+          <el-input v-model="kbForm.name" placeholder="给知识库起个名字" />
+        </el-form-item>
+        <el-form-item label="描述（可选）">
+          <el-input v-model="kbForm.desc" type="textarea" :rows="2" placeholder="用一句话描述内容" />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="showCreateKb = false">取消</el-button>
+        <el-button type="primary" :loading="creatingKb" @click="handleCreateKb">创建</el-button>
+      </template>
+    </el-dialog>
+  </div>
 </template>
 
 <script setup lang="ts">
