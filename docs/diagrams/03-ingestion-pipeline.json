@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "文档入库数据流",
+    "subtitle": "手动上传 → 安全校验 → 受限解析 → 分块与 Embedding → 双存储",
+    "output": "03-ingestion-pipeline.html",
+    "viewBox": [1080, 760]
+  },
+  "stages": [
+    { "label": "上传" },
+    { "label": "校验" },
+    { "label": "解析" },
+    { "label": "转换" },
+    { "label": "持久化" }
+  ],
+  "nodes": [
+    { "id": "upload", "type": "frontend", "label": "手动上传", "sublabel": "PDF · DOCX · MD · TXT", "stage": 0, "row": 1, "tag": "≤100 MB" },
+    { "id": "temp", "type": "security", "label": "隔离临时文件", "sublabel": "原子移动前", "stage": 1, "row": 0, "tag": "受控路径" },
+    { "id": "validate", "type": "security", "label": "格式与资源校验", "sublabel": "签名 · MIME · 压缩比", "stage": 1, "row": 2, "tag": "拒绝异常文件" },
+    { "id": "parser", "type": "backend", "label": "解析子进程", "sublabel": "超时 · 内存限制", "stage": 2, "row": 1, "tag": "无数据库密钥" },
+    { "id": "chunks", "type": "backend", "label": "文本清洗与分块", "sublabel": "标题/段落边界", "stage": 3, "row": 0, "tag": "稳定 chunk ID" },
+    { "id": "embedding", "type": "external", "label": "Embedding 中转", "sublabel": "KB 绑定模型", "stage": 3, "row": 2, "tag": "最多重试 3 次" },
+    { "id": "mysql", "type": "database", "label": "MySQL", "sublabel": "文档状态 · 任务 · 元数据", "stage": 4, "row": 0, "tag": "事实来源" },
+    { "id": "chroma", "type": "database", "label": "ChromaDB", "sublabel": "向量 + chunk 原文", "stage": 4, "row": 2, "tag": "活动 Collection" },
+    { "id": "files", "type": "database", "label": "原始文件", "sublabel": "永久保留", "stage": 4, "row": 4, "tag": "参与备份" }
+  ],
+  "flows": [
+    { "from": "upload", "to": "temp", "label": "上传字节", "classification": "用户私有", "variant": "security", "fromSide": "right", "toSide": "left", "route": "top-channel", "channelY": 96 },
+    { "from": "temp", "to": "validate", "label": "待校验文件", "classification": "不可信", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "straight", "labelAt": [315, 200] },
+    { "from": "validate", "to": "parser", "label": "已验证原件", "classification": "受限解析", "variant": "emphasis", "fromSide": "right", "toSide": "left", "route": "vertical-channel", "channelX": 420 },
+    { "from": "parser", "to": "chunks", "label": "结构化文本", "classification": "无凭据", "variant": "emphasis", "fromSide": "right", "toSide": "left", "route": "top-channel", "channelY": 96 },
+    { "from": "chunks", "to": "embedding", "label": "chunk 文本", "classification": "模型输入", "variant": "default", "fromSide": "bottom", "toSide": "top", "route": "straight", "labelAt": [745, 200] },
+    { "from": "embedding", "to": "chroma", "label": "向量 + 原文", "classification": "用户隔离", "variant": "emphasis", "route": "straight" },
+    { "from": "chunks", "to": "mysql", "label": "状态 + 元数据", "classification": "用户隔离", "variant": "default", "route": "straight" },
+    { "from": "temp", "to": "files", "label": "校验后原件", "classification": "受控相对路径", "variant": "dashed", "fromSide": "right", "toSide": "left", "route": "bottom-channel", "channelY": 680 }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "安全约束", "items": ["文件名不参与磁盘路径", "解析子进程无数据库与模型密钥", "异常文件不自动重试"] },
+    { "dot": "emerald", "title": "任务语义", "items": ["MySQL 持久化文档任务", "单消费者顺序执行", "进程重启恢复 pending 任务"] },
+    { "dot": "cyan", "title": "幂等写入", "items": ["chunk ID 包含 doc/index/hash", "重试前清理旧向量", "原件支持未来全量重建"] }
+  ]
+}

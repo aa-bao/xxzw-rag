@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "diagram_type": "workflow",
+  "meta": {
+    "title": "RAG 问答工作流",
+    "subtitle": "服务端历史 → 单知识库纯向量检索 → 本地中转流式生成",
+    "output": "02-retrieval-pipeline.html"
+  },
+  "lanes": [
+    { "id": "ui", "label": "Vue 前端" },
+    { "id": "api", "label": "FastAPI / 会话" },
+    { "id": "retrieval", "label": "RetrievalModule" },
+    { "id": "model", "label": "模型中转" },
+    { "id": "store", "label": "MySQL" },
+    { "id": "error", "label": "失败处理", "variant": "exception" }
+  ],
+  "phases": [
+    { "id": "request", "label": "认证与上下文", "fromCol": 0, "toCol": 1, "variant": "security" },
+    { "id": "retrieve", "label": "检索", "fromCol": 2, "toCol": 3, "variant": "emphasis" },
+    { "id": "generate", "label": "生成与落库", "fromCol": 4, "toCol": 5, "variant": "dashed" }
+  ],
+  "mainPath": ["ask", "validate", "embed", "topk", "generate", "render"],
+  "nodes": [
+    { "id": "ask", "lane": "ui", "col": 0, "type": "frontend", "label": "提交问题", "sublabel": "conversation_id" },
+    { "id": "render", "lane": "ui", "col": 5, "type": "frontend", "label": "渲染回答", "sublabel": "SSE + 引用" },
+    { "id": "validate", "lane": "api", "col": 1, "type": "security", "label": "校验会话", "sublabel": "用户 + kb_id" },
+    { "id": "prompt", "lane": "api", "col": 4, "type": "backend", "label": "构建 Prompt", "sublabel": "不可信来源分隔" },
+    { "id": "embed", "lane": "retrieval", "col": 2, "type": "backend", "label": "问题向量", "sublabel": "绑定 KB 模型" },
+    { "id": "topk", "lane": "retrieval", "col": 3, "type": "database", "label": "Chroma Top-K", "sublabel": "仅活动索引" },
+    { "id": "generate", "lane": "model", "col": 4, "type": "external", "label": "流式生成", "sublabel": "Chat Completions" },
+    { "id": "history", "lane": "store", "col": 1, "type": "database", "label": "加载历史", "sublabel": "Token 预算" },
+    { "id": "complete", "lane": "store", "col": 5, "type": "database", "label": "完成落库", "sublabel": "消息 + 引用 + 日志" },
+    { "id": "failed", "lane": "error", "col": 5, "type": "security", "label": "标记失败", "sublabel": "可手动重试" }
+  ],
+  "edges": [
+    { "from": "ask", "to": "validate", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "validate", "to": "embed", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "embed", "to": "topk" },
+    { "from": "topk", "to": "generate", "label": "Top-5 chunks", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "generate", "to": "render", "variant": "emphasis", "fromSide": "top", "toSide": "bottom", "route": "drop" },
+    { "from": "validate", "to": "history", "label": "服务端历史", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "prompt", "to": "generate", "variant": "default", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "generate", "to": "complete", "label": "成功", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "route": "drop" },
+    { "from": "generate", "to": "failed", "label": "中断 / 超时", "variant": "security", "role": "error", "fromSide": "right", "toSide": "right", "route": "outside-right", "labelSegment": 1, "labelAt": [692, 655] }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "MVP 检索", "items": ["每个对话绑定一个知识库", "RetrievalModule 只暴露 retrieve()", "当前实现为 ChromaDB Top-K"] },
+    { "dot": "rose", "title": "失败语义", "items": ["首 Token 前最多重试一次", "首 Token 后失败不自动重试", "半截回答不写入历史"] }
+  ]
+}

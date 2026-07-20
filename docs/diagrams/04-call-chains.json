@@ -1,0 +1,51 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "本机问答调用序列",
+    "subtitle": "Session 鉴权 · 服务端历史 · ChromaDB Top-K · 模型中转 SSE",
+    "output": "04-call-chains.html",
+    "viewBox": [920, 1000]
+  },
+  "participants": [
+    { "id": "user", "type": "external", "label": "用户", "sublabel": "本机浏览器" },
+    { "id": "vue", "type": "frontend", "label": "Vue", "sublabel": "同源页面" },
+    { "id": "api", "type": "backend", "label": "FastAPI", "sublabel": "Session + RAG" },
+    { "id": "mysql", "type": "database", "label": "MySQL", "sublabel": "事实来源" },
+    { "id": "chroma", "type": "database", "label": "ChromaDB", "sublabel": "活动索引" },
+    { "id": "relay", "type": "external", "label": "模型中转", "sublabel": "OpenAI-compatible" }
+  ],
+  "segments": [
+    { "from": 150, "to": 330, "label": "认证与历史" },
+    { "from": 345, "to": 560, "label": "纯向量检索" },
+    { "from": 575, "to": 830, "label": "流式生成与落库" }
+  ],
+  "messages": [
+    { "from": "user", "to": "vue", "y": 180, "label": "提交问题", "variant": "default" },
+    { "from": "vue", "to": "api", "y": 220, "label": "POST /api/chat/query", "variant": "security", "note": "HttpOnly Session Cookie" },
+    { "from": "api", "to": "mysql", "y": 265, "label": "校验 Session + 会话归属", "variant": "security" },
+    { "from": "mysql", "to": "api", "y": 305, "label": "kb_id + 历史 + 配置", "variant": "return" },
+    { "from": "api", "to": "relay", "y": 365, "label": "创建问题 Embedding", "variant": "emphasis" },
+    { "from": "relay", "to": "api", "y": 405, "label": "查询向量", "variant": "return" },
+    { "from": "api", "to": "chroma", "y": 455, "label": "活动 Collection Top-K", "variant": "emphasis" },
+    { "from": "chroma", "to": "api", "y": 500, "label": "Top-5 chunks + 来源", "variant": "return" },
+    { "from": "api", "to": "mysql", "y": 545, "label": "保存用户消息 + streaming", "variant": "dashed" },
+    { "from": "api", "to": "relay", "y": 605, "label": "流式 Chat Completions", "variant": "emphasis" },
+    { "from": "relay", "to": "api", "y": 650, "label": "SSE chunks", "variant": "return" },
+    { "from": "api", "to": "vue", "y": 695, "label": "chunk 事件", "variant": "return" },
+    { "from": "api", "to": "mysql", "y": 750, "label": "完成消息 + 引用 + 日志", "variant": "dashed" },
+    { "from": "api", "to": "vue", "y": 795, "label": "done / error", "variant": "return" },
+    { "from": "vue", "to": "user", "y": 835, "label": "回答与引用卡片", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "vue", "from": 210, "to": 842, "type": "frontend" },
+    { "participant": "api", "from": 220, "to": 805, "type": "backend" },
+    { "participant": "mysql", "from": 260, "to": 315, "type": "database" },
+    { "participant": "chroma", "from": 450, "to": 510, "type": "database" },
+    { "participant": "relay", "from": 360, "to": 660, "type": "external" }
+  ],
+  "cards": [
+    { "dot": "rose", "title": "权限不变量", "items": ["客户端不提交 user_id 或历史", "会话与知识库必须属于当前用户", "仅查询 active_collection"] },
+    { "dot": "emerald", "title": "流式不变量", "items": ["首 Token 后不自动重试", "成功后一次性持久化完整回答", "失败消息保留并允许手动重试"] }
+  ]
+}

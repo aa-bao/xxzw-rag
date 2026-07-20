@@ -1,0 +1,36 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "RAG 知识库 MVP — 本机架构",
+    "subtitle": "多用户 Session · FastAPI 托管 Vue · MySQL + ChromaDB · 本地模型中转",
+    "output": "01-system-architecture.html",
+    "viewBox": [1040, 720]
+  },
+  "components": [
+    { "id": "browser", "type": "external", "label": "本机用户", "sublabel": "浏览器", "pos": [40, 282], "size": [120, 60] },
+    { "id": "app", "type": "backend", "label": "RAG 服务", "sublabel": "FastAPI :8000", "pos": [280, 280], "size": [150, 64], "tag": "Vue + API + Session" },
+    { "id": "parser", "type": "security", "label": "解析子进程", "sublabel": "超时 · 内存限制", "pos": [280, 470], "size": [150, 64], "tag": "不可信文件" },
+    { "id": "mysql", "type": "database", "label": "MySQL 8.4", "sublabel": "用户 · 元数据 · 任务", "pos": [540, 100], "size": [150, 64] },
+    { "id": "chroma", "type": "database", "label": "ChromaDB", "sublabel": "版本化向量索引", "pos": [540, 280], "size": [150, 64] },
+    { "id": "files", "type": "database", "label": "原始文件", "sublabel": "用户/知识库/文档", "pos": [540, 470], "size": [150, 64] },
+    { "id": "relay", "type": "external", "label": "模型中转", "sublabel": "OpenAI-compatible", "pos": [820, 280], "size": [150, 64], "tag": "Embedding + Chat" }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "Docker Compose / 本机", "wraps": ["app", "parser", "mysql", "chroma", "files"] },
+    { "kind": "security-group", "label": "用户空间隔离", "wraps": ["app", "mysql", "chroma", "files"], "pad": 18 }
+  ],
+  "connections": [
+    { "from": "browser", "to": "app", "label": "HTTP + Session", "variant": "security", "route": "straight" },
+    { "from": "app", "to": "mysql", "label": "SQL", "fromSide": "right", "toSide": "left", "route": "orthogonal-h", "labelAt": [455, 184] },
+    { "from": "app", "to": "chroma", "label": "Top-K / upsert", "variant": "emphasis", "route": "straight" },
+    { "from": "app", "to": "files", "label": "受控路径", "fromSide": "right", "toSide": "left", "route": "orthogonal-h", "labelAt": [455, 452] },
+    { "from": "app", "to": "parser", "label": "隔离解析", "variant": "security", "fromSide": "bottom", "toSide": "top", "route": "straight", "labelAt": [355, 358] },
+    { "from": "app", "to": "relay", "label": "Embedding / SSE", "variant": "emphasis", "fromSide": "right", "toSide": "left", "via": [[470, 240], [760, 240]], "labelAt": [700, 228] }
+  ],
+  "cards": [
+    { "dot": "cyan", "title": "发布边界", "items": ["FastAPI 同源托管 Vue 与 /api", "仅绑定 127.0.0.1:8000", "单 Uvicorn worker"] },
+    { "dot": "rose", "title": "安全边界", "items": ["服务端 Session + owner_user_id", "复合外键作为第二道隔离", "解析子进程不接触数据库或密钥"] },
+    { "dot": "emerald", "title": "持久化", "items": ["MySQL 是业务事实来源", "ChromaDB 使用版本化 Collection", "原始文件始终保留并参与备份"] }
+  ]
+}
