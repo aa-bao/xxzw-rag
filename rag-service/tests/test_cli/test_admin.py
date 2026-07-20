@@ -11,7 +11,7 @@ from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from typer.testing import CliRunner
 
-from src.db.models import User
+from src.db.models import Document, DocumentJob, KnowledgeBase, Session, User
 
 
 def _load_cli_app():
@@ -38,6 +38,10 @@ async def _clear_users(database_url: str) -> None:
     try:
         factory = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
         async with factory() as session:
+            await session.execute(delete(DocumentJob))
+            await session.execute(delete(Document))
+            await session.execute(delete(KnowledgeBase))
+            await session.execute(delete(Session))
             await session.execute(delete(User))
             await session.commit()
     finally:
