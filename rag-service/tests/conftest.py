@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import os
 import subprocess
+import sys
 import time
 import uuid
-import os
 from collections.abc import Iterator
 
 import pytest
@@ -51,13 +52,14 @@ def mysql_url() -> Iterator[str]:
                 [
                     "docker",
                     "exec",
+                    "--env",
+                    f"MYSQL_PWD={password}",
                     name,
                     "mysqladmin",
                     "ping",
                     "-h",
                     "127.0.0.1",
                     "-uroot",
-                    f"-p{password}",
                     "--silent",
                 ],
                 capture_output=True,
@@ -78,3 +80,18 @@ def mysql_url() -> Iterator[str]:
             check=False,
             capture_output=True,
         )
+
+
+@pytest.fixture()
+def migrated_mysql_url(mysql_url: str) -> str:
+    environment = os.environ.copy()
+    environment["DATABASE_URL"] = mysql_url
+    migration = subprocess.run(
+        [sys.executable, "-m", "alembic", "upgrade", "head"],
+        env=environment,
+        capture_output=True,
+        text=True,
+    )
+    assert migration.returncode == 0, migration.stdout + migration.stderr
+    return mysql_url
+
