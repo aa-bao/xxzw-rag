@@ -1,0 +1,40 @@
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+      MYSQL_DATABASE: rag
+    ports:
+      - "127.0.0.1:3306:3306"
+    volumes:
+      - mysqldata:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-uroot", "-p${MYSQL_ROOT_PASSWORD}"]
+      interval: 5s
+      timeout: 10s
+      retries: 30
+      start_period: 20s
+
+  rag:
+    build:
+      context: .
+      dockerfile: rag-service/Dockerfile
+    environment:
+      DATABASE_URL: mysql+asyncmy://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/rag
+      MODEL_RELAY_BASE_URL: ${MODEL_RELAY_BASE_URL}
+      MODEL_RELAY_API_KEY: ${MODEL_RELAY_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+      CHAT_MODEL: ${CHAT_MODEL}
+    ports:
+      - "127.0.0.1:8000:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+    volumes:
+      - uploads:/app/data/uploads
+      - chroma:/app/data/chroma
+
+volumes:
+  mysqldata:
+  uploads:
+  chroma:

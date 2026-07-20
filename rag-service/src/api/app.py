@@ -1,7 +1,10 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+from fastapi.staticfiles import StaticFiles
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.api.router_auth import router as auth_router
@@ -36,6 +39,15 @@ def create_app(
     @app.get("/api/health/live")
     async def live() -> dict[str, object]:
         return {"success": True, "data": {"status": "live"}}
+
+    # SPA static fallback: serve built assets, redirect unknown GET routes to index.html
+    static_dir = Path(__file__).resolve().parent.parent.parent.parent / "web" / "dist"
+    if not static_dir.exists():
+        static_dir = Path(__file__).resolve().parent.parent.parent / "static"
+
+    if static_dir.exists():
+        app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
+        app.mount("/", StaticFiles(directory=static_dir, html=True), name="spa")
 
     return app
 
