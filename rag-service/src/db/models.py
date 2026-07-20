@@ -1,0 +1,291 @@
+from __future__ import annotations
+
+from datetime import datetime
+from decimal import Decimal
+
+from sqlalchemy import (
+    BigInteger,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Index,
+    Integer,
+    Numeric,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
+from sqlalchemy.orm import Mapped, mapped_column
+
+from src.db.base import Base
+
+
+CURRENT_TIMESTAMP = text("CURRENT_TIMESTAMP")
+
+
+class User(Base):
+    __tablename__ = "rag_user"
+    __table_args__ = (
+        CheckConstraint("role IN ('user','account_admin')", name="ck_rag_user_role"),
+        CheckConstraint("status IN ('active','disabled','deleting')", name="ck_rag_user_status"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(100), nullable=False, unique=True)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'user'"))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'active'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=CURRENT_TIMESTAMP,
+        server_onupdate=CURRENT_TIMESTAMP,
+    )
+
+
+class Session(Base):
+    __tablename__ = "rag_session"
+    __table_args__ = (
+        Index("idx_session_user_expiry", "user_id", "expires_at"),
+        Index("idx_session_expiry", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_user.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+
+
+class KnowledgeBase(Base):
+    __tablename__ = "rag_knowledge_base"
+    __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uk_kb_owner"),
+        Index("idx_kb_owner", "owner_user_id", "updated_at"),
+        CheckConstraint(
+            "index_status IN ('ready','rebuilding','failed','deleting')",
+            name="ck_rag_kb_index_status",
+        ),
+        CheckConstraint("chunk_size >= 64", name="ck_rag_kb_chunk_size"),
+        CheckConstraint("overlap >= 0 AND overlap < chunk_size", name="ck_rag_kb_overlap"),
+        CheckConstraint("top_k >= 1", name="ck_rag_kb_top_k"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    owner_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    description: Mapped[str | None] = mapped_column(String(1000))
+    chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("512"))
+    overlap: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("50"))
+    embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
+    active_collection: Mapped[str] = mapped_column(String(200), nullable=False)
+    index_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
+    index_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'ready'"))
+    similarity_threshold: Mapped[Decimal] = mapped_column(
+        Numeric(3, 2), nullable=False, server_default=text("0.20")
+    )
+    top_k: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("5"))
+    enabled: Mapped[bool] = mapped_column(nullable=False, server_default=text("1"))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP
+    )
+
+
+class Document(Base):
+    __tablename__ = "rag_document"
+    __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uk_document_owner"),
+        ForeignKeyConstraint(
+            ["kb_id", "owner_user_id"],
+            ["rag_knowledge_base.id", "rag_knowledge_base.owner_user_id"],
+            name="fk_document_kb_owner",
+            ondelete="CASCADE",
+        ),
+        Index("idx_document_kb_status", "kb_id", "status"),
+        Index("idx_document_owner", "owner_user_id"),
+        CheckConstraint(
+            "status IN ('pending','running','done','failed','deleting')",
+            name="ck_rag_document_status",
+        ),
+        CheckConstraint("chunk_count >= 0", name="ck_rag_document_chunk_count"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    title: Mapped[str] = mapped_column(String(500), nullable=False)
+    source: Mapped[str] = mapped_column(String(2000), nullable=False)
+    source_type: Mapped[str] = mapped_column(String(50), nullable=False, server_default=text("'upload'"))
+    file_path: Mapped[str] = mapped_column(String(1000), nullable=False)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, server_default=text("'pending'"))
+    tags: Mapped[str | None] = mapped_column(String(2000))
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    ingested_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP
+    )
+
+
+class DocumentJob(Base):
+    __tablename__ = "rag_document_job"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["doc_id", "owner_user_id"],
+            ["rag_document.id", "rag_document.owner_user_id"],
+            name="fk_document_job_owner",
+            ondelete="CASCADE",
+        ),
+        Index("idx_document_job_claim", "status", "created_at"),
+        Index("idx_document_job_document", "doc_id"),
+        Index("idx_document_job_owner", "owner_user_id"),
+        CheckConstraint("job_type IN ('ingest','delete')", name="ck_rag_document_job_type"),
+        CheckConstraint(
+            "status IN ('pending','running','done','failed')",
+            name="ck_rag_document_job_status",
+        ),
+        CheckConstraint(
+            "stage IS NULL OR stage IN ('parsing','chunking','embedding','indexing')",
+            name="ck_rag_document_job_stage",
+        ),
+        CheckConstraint("attempts >= 0", name="ck_rag_document_job_attempts"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    doc_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    job_type: Mapped[str] = mapped_column(String(20), nullable=False)
+    kb_job_id: Mapped[int | None] = mapped_column(BigInteger)
+    target_collection: Mapped[str | None] = mapped_column(String(200))
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
+    stage: Mapped[str | None] = mapped_column(String(20))
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP
+    )
+
+
+class Conversation(Base):
+    __tablename__ = "rag_conversation"
+    __table_args__ = (
+        UniqueConstraint("id", "owner_user_id", name="uk_conversation_owner"),
+        ForeignKeyConstraint(
+            ["kb_id", "owner_user_id"],
+            ["rag_knowledge_base.id", "rag_knowledge_base.owner_user_id"],
+            name="fk_conversation_kb_owner",
+            ondelete="CASCADE",
+        ),
+        Index("idx_conversation_owner", "owner_user_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    title: Mapped[str | None] = mapped_column(String(500))
+    kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP
+    )
+
+
+class Message(Base):
+    __tablename__ = "rag_message"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "sequence", name="uk_conversation_sequence"),
+        CheckConstraint("role IN ('user','assistant','system')", name="ck_rag_message_role"),
+        CheckConstraint(
+            "status IN ('streaming','completed','failed')", name="ck_rag_message_status"
+        ),
+        CheckConstraint("tokens_used >= 0", name="ck_rag_message_tokens"),
+        CheckConstraint("sequence >= 0", name="ck_rag_message_sequence"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rag_conversation.id", ondelete="CASCADE"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String(20), nullable=False)
+    content: Mapped[str | None] = mapped_column(Text)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'completed'"))
+    retry_of_message_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("rag_message.id", ondelete="SET NULL")
+    )
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+
+
+class Reference(Base):
+    __tablename__ = "rag_reference"
+    __table_args__ = (Index("idx_reference_message", "message_id"),)
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    message_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_message.id", ondelete="CASCADE"), nullable=False
+    )
+    chunk_id: Mapped[str | None] = mapped_column(String(160))
+    doc_id: Mapped[int | None] = mapped_column(BigInteger)
+    doc_title: Mapped[str | None] = mapped_column(String(500))
+    snippet: Mapped[str | None] = mapped_column(Text)
+    score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
+    page: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+
+
+class QueryLog(Base):
+    __tablename__ = "rag_query_log"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["kb_id", "owner_user_id"],
+            ["rag_knowledge_base.id", "rag_knowledge_base.owner_user_id"],
+            name="fk_query_kb_owner",
+            ondelete="CASCADE",
+        ),
+        Index("idx_query_conversation", "conversation_id"),
+        Index("idx_query_owner_time", "owner_user_id", "created_at"),
+        Index("idx_query_result", "result_status", "created_at"),
+        CheckConstraint(
+            "result_status IS NULL OR result_status IN ('success','empty','error')",
+            name="ck_rag_query_result",
+        ),
+        CheckConstraint("chunks_count >= 0", name="ck_rag_query_chunks"),
+        CheckConstraint("tokens_used >= 0", name="ck_rag_query_tokens"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(
+        String(36), ForeignKey("rag_conversation.id", ondelete="CASCADE"), nullable=False
+    )
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_message_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_message.id", ondelete="CASCADE"), nullable=False
+    )
+    assistant_message_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("rag_message.id", ondelete="SET NULL")
+    )
+    chunks_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    result_status: Mapped[str | None] = mapped_column(String(20))
+    tokens_used: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    duration_ms: Mapped[int | None] = mapped_column(Integer)
+    error_code: Mapped[str | None] = mapped_column(String(100))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+

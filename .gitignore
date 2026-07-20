@@ -1,0 +1,13 @@
+.codegraph/
+.venv/
+__pycache__/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.py[cod]
+.env
+data/
+rag-service/data/
+web/node_modules/
+web/dist/
+
