@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -22,10 +22,11 @@ class CreateKbRequest(BaseModel):
 @router.post("")
 async def create_kb(
     body: CreateKbRequest,
+    request: Request,
     user_id: int = Depends(require_user),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
-    settings: Settings = db.get_bind()._parent._app_state.settings  # type: ignore[attr-defined]
+    settings: Settings = request.app.state.settings
     repo = KnowledgeBaseRepository(db)
     kb = await repo.create(
         owner_user_id=user_id,
