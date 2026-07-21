@@ -20,9 +20,22 @@ def create_app(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Local RAG Knowledge Base")
+
+    if settings is None:
+        settings = Settings.load(Path(__file__).resolve().parent.parent.parent / "config.yaml")
+
     app.state.settings = settings
-    if session_factory is not None:
-        app.state.session_factory = session_factory
+
+    if session_factory is None:
+        from src.db.session import create_engine as db_create_engine
+        engine = db_create_engine(
+            settings.database.url.get_secret_value(),
+            pool_size=settings.database.pool_size,
+            pool_recycle=settings.database.pool_recycle_seconds,
+        )
+        session_factory = async_sessionmaker(engine, expire_on_commit=False)
+
+    app.state.session_factory = session_factory
 
     app.include_router(auth_router)
     app.include_router(kb_router)
