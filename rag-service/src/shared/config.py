@@ -35,10 +35,18 @@ class ModelRelaySettings(FrozenModel):
     api_key: SecretStr
     embedding_model: str
     chat_model: str
+    embedding_base_url: str = ""
+    embedding_api_key: SecretStr = SecretStr("")
     timeout_seconds: float = Field(gt=0)
     embedding_max_retries: int = Field(ge=1)
     chat_pre_stream_max_retries: int = Field(ge=0)
     retry_base_delay_seconds: float = Field(gt=0)
+
+    def model_post_init(self, _context: object) -> None:
+        if not self.embedding_base_url:
+            object.__setattr__(self, "embedding_base_url", self.base_url)
+        if self.embedding_api_key.get_secret_value() == "":
+            object.__setattr__(self, "embedding_api_key", self.api_key)
 
 
 class DatabaseSettings(FrozenModel):

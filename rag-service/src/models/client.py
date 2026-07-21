@@ -47,17 +47,22 @@ class ModelRelayClient:
         return self._settings.model_relay.embedding_model
 
     @property
-    def _embedding_max_retries(self) -> int:
-        return self._settings.model_relay.embedding_max_retries
+    def _embedding_base_url(self) -> str:
+        return self._settings.model_relay.embedding_base_url or self._base_url
+
+    @property
+    def _embedding_api_key(self) -> str:
+        ek = self._settings.model_relay.embedding_api_key.get_secret_value()
+        return ek if ek else self._api_key
 
     @property
     def _retry_delay(self) -> float:
         return self._settings.model_relay.retry_base_delay_seconds
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
-        url = f"{self._base_url}/embeddings"
+        url = f"{self._embedding_base_url}/embeddings"
         payload = {"model": self._embedding_model, "input": texts}
-        headers = {"Authorization": f"Bearer {self._api_key}"}
+        headers = {"Authorization": f"Bearer {self._embedding_api_key}"}
 
         last_error: ModelError | None = None
         for attempt in range(self._embedding_max_retries):

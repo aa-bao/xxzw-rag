@@ -15,6 +15,8 @@ model_relay:
   api_key: ${MODEL_RELAY_API_KEY}
   embedding_model: ${EMBEDDING_MODEL}
   chat_model: ${CHAT_MODEL}
+  embedding_base_url: ${EMBEDDING_BASE_URL}
+  embedding_api_key: ${EMBEDDING_API_KEY}
   timeout_seconds: 60
   embedding_max_retries: 3
   chat_pre_stream_max_retries: 1
@@ -40,4 +42,3 @@ llm:
     只能基于当前问题附带的参考资料回答；没有依据时明确拒答。
 
 empty_response: "根据现有知识库文档，未找到相关信息。"
-
