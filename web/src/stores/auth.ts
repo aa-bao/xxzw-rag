@@ -8,6 +8,12 @@ export const useAuthStore = defineStore('auth', () => {
   const initialized = ref(false)
 
   async function init() {
+    // 本地开发跳过登录：VITE_DEV_BYPASS_AUTH=true 时直接以 preview 用户进入
+    if (import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true') {
+      user.value = { id: 1, username: 'preview', role: 'user' }
+      initialized.value = true
+      return
+    }
     try {
       const resp = await api.me()
       user.value = resp.data

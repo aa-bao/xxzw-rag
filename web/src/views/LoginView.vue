@@ -24,6 +24,15 @@
         <el-button type="primary" size="large" :loading="loading" native-type="submit" class="login-card__btn">
           登录
         </el-button>
+
+        <el-button
+          v-if="devBypass"
+          size="large"
+          class="login-card__btn login-card__dev"
+          @click="handleDevLogin"
+        >
+          开发模式（跳过登录）
+        </el-button>
       </el-form>
     </section>
   </main>
@@ -39,10 +48,17 @@ const router = useRouter()
 const loading = ref(false)
 const error = ref('')
 
+const devBypass = import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true'
+
 const form = reactive({ username: '', password: '' })
 const rules = {
   username: [{ required: true, message: '请输入用户名', trigger: 'blur' }],
   password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
+}
+
+async function handleDevLogin() {
+  await auth.init()
+  router.push('/rag')
 }
 
 async function handleLogin() {
@@ -99,5 +115,9 @@ async function handleLogin() {
 .login-card__btn {
   width: 100%;
   margin-top: 8px;
+}
+
+.login-card__dev {
+  margin-top: 4px;
 }
 </style>

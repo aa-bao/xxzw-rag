@@ -11,3 +11,9 @@ rag-service/data/
 web/node_modules/
 web/dist/
 
+
+# 本地开发 / 工具生成
+rag-service/cookies.txt
+.claude/scheduled_tasks.lock
+.serena/
+test/
