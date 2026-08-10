@@ -296,6 +296,56 @@ async def test_expand_context_without_relay_degrades_to_packed_cores() -> None:
     assert expanded == cores
 
 
+async def test_expand_context_orders_hard_split_fragments_by_offset(
+    migrated_mysql_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        owner_id, kb_id = await _seed_kb(factory, "fragments", "kb_fragments_v1")
+        ids = [
+            "10:3:hash#500",
+            "10:4:right",
+            "10:3:hash#1000",
+            "10:2:left",
+            "10:3:hash#0",
+        ]
+        collection = _ExpandableChromaCollection(
+            {
+                10: {
+                    "ids": ids,
+                    "documents": ids,
+                    "metadatas": [
+                        {"doc_id": 10, "title": "doc", "chunk_index": index}
+                        for index in [3, 4, 3, 2, 3]
+                    ],
+                    "embeddings": [[1.0, 0.0] for _ in ids],
+                }
+            }
+        )
+        module = ChromaRetrieval(factory, relay=_RecordingRelay([1.0, 0.0]))
+        monkeypatch.setattr(module, "_get_client", lambda: _SingleCollectionClient(collection))
+        core = _core("10:3:hash#500", 10, 3, kb_id, 0.9)
+
+        expanded = await module.expand_context(
+            "question", owner_id, [core], seed_count=1
+        )
+
+        assert [chunk.chunk_id for chunk in expanded] == [
+            "10:2:left",
+            "10:3:hash#0",
+            "10:3:hash#500",
+            "10:3:hash#1000",
+            "10:4:right",
+        ]
+        assert next(
+            chunk for chunk in expanded if chunk.chunk_id == core.chunk_id
+        ).is_neighbor is False
+    finally:
+        await engine.dispose()
+
+
 class _FakeChromaClient:
     """Minimal chromadb client double: records get_or_create, serves query results."""
 

@@ -366,6 +366,13 @@ def _chunk_index_from_id(chunk_id: str) -> int | None:
     return _optional_int(parts[1]) if len(parts) >= 2 else None
 
 
+def _chunk_offset_from_id(chunk_id: str) -> int:
+    if "#" not in chunk_id:
+        return 0
+    offset = _optional_int(chunk_id.rsplit("#", 1)[1])
+    return offset if offset is not None else 0
+
+
 def _resolve_chunk_index(metadata: dict[str, Any], chunk_id: str) -> int | None:
     index = _optional_int(metadata.get("chunk_index"))
     return index if index is not None else _chunk_index_from_id(chunk_id)
@@ -412,7 +419,7 @@ def _neighbor_window(
     metadatas = _flat_result_values(result, "metadatas")
     embeddings = _flat_result_values(result, "embeddings")
     wanted = {seed_index - 1, seed_index, seed_index + 1}
-    indexed: list[tuple[int, RetrievedChunk]] = []
+    indexed: list[tuple[tuple[int, int], RetrievedChunk]] = []
     for position, raw_id in enumerate(ids):
         chunk_id = str(raw_id)
         metadata = (
@@ -426,8 +433,9 @@ def _neighbor_window(
             continue
 
         core = core_by_key.get((seed.kb_id, chunk_id))
+        ordering_key = (index, _chunk_offset_from_id(chunk_id))
         if core is not None:
-            indexed.append((index, core))
+            indexed.append((ordering_key, core))
             continue
         if position >= len(embeddings):
             raise ValueError(f"stored embedding missing for chunk {chunk_id!r}")
@@ -445,7 +453,7 @@ def _neighbor_window(
         page = _optional_int(metadata.get("page"))
         indexed.append(
             (
-                index,
+                ordering_key,
                 RetrievedChunk(
                     chunk_id=chunk_id,
                     content=content,
