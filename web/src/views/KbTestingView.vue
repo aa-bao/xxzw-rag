@@ -469,10 +469,6 @@ const hoverMotion = {
   font-size: 13px;
   line-height: 1.6;
   color: var(--text-secondary);
-  display: -webkit-box;
-  -webkit-line-clamp: 5;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
   word-break: break-word;
   white-space: pre-wrap;
 }

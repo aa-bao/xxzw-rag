@@ -1582,10 +1582,6 @@ const breathMotion = {
   color: var(--text-primary);
   white-space: pre-wrap;
   word-break: break-word;
-  display: -webkit-box;
-  -webkit-line-clamp: 6;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
 }
 
 .docs-drawer__chunk-more {
