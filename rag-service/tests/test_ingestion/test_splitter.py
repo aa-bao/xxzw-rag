@@ -92,3 +92,31 @@ def test_md_table_not_polluted_by_overlap() -> None:
     # 表格 chunk 不应含正文内容
     assert "后续正文" not in table_chunk["content"]
     assert table_chunk["content"].endswith("| 开发 | 50 |")
+
+
+def test_faq_question_and_answer_stay_in_one_chunk() -> None:
+    text = (
+        "4、商品标签标识违规：违反规则将处罚。5、其他违规按规则处罚。"
+        "# 九、FAQ"
+        "1、半托管商家承责的纠纷范围发生了哪些变化？"
+        "答：针对JIT模式履约的订单，破损问题由商家承担。"
+        "2、如何减少破损问题的产生？答：请改善销售包装。"
+    )
+    chunks = split_text(558, text, chunk_size=64, overlap=0)
+    contents = [chunk["content"] for chunk in chunks]
+    assert any("1、半托管商家承责" in value and "破损问题由商家承担" in value for value in contents)
+    assert not any(value.endswith("发生了哪些变化？") for value in contents)
+
+
+def test_numbered_rules_without_faq_marker_are_not_qa_units() -> None:
+    chunks = split_text(1, "1、规则一。2、规则二。答：补充说明。", chunk_size=20, overlap=0)
+    assert all("规则一。2、规则二。答" not in chunk["content"] for chunk in chunks)
+
+
+def test_long_faq_repeats_question_prefix() -> None:
+    question = "1、很长的答案如何处理？"
+    chunks = split_text(1, f"# FAQ{question}答：{'答案内容。' * 150}", chunk_size=256, overlap=0)
+    faq_chunks = [chunk["content"] for chunk in chunks if question in chunk["content"]]
+    assert len(faq_chunks) >= 2
+    assert all(value.startswith(question) for value in faq_chunks)
+    assert all(len(value) <= 500 for value in faq_chunks)

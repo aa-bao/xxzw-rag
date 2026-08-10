@@ -8,6 +8,11 @@ from typing import Any
 _PARAGRAPH_RE = re.compile(r"\n\s*\n")
 _LINE_RE = re.compile(r"\n")
 _SENTENCE_RE = re.compile(r"(?<=[。！？；!?；…])")
+_FAQ_MARKER_RE = re.compile(r"FAQ", re.IGNORECASE)
+_FAQ_ITEM_RE = re.compile(
+    r"(?<!\d)\d+\s*[、.．]\s*.*?[？?]\s*答[：:]",
+    re.DOTALL,
+)
 
 # 目标块大小允许的浮动比例：凑边界时允许略超
 _SIZE_TOLERANCE = 0.15
@@ -49,7 +54,7 @@ def split_text(
     - 表格（连续 | 行）作为不可分割单元，整表/按行组切（保表头）
     - 空块 / 纯空白块丢弃
     """
-    units = _to_units(text)
+    units = _extract_faq_units(text)
     if not units:
         return []
 
@@ -98,6 +103,13 @@ def split_text(
                 flush()
             consumed += 1
             continue
+        if _looks_like_faq_unit(unit):
+            flush()
+            pieces = [unit] if len(unit) <= 500 else _split_long_faq(unit, 500)
+            for piece in pieces:
+                chunks.append(_make_chunk(doc_id, piece.strip(), len(chunks)))
+            consumed += 1
+            continue
         # 单单元超长（> 容忍上限）：flush 现有缓冲，单元自身按句/硬切细分
         if unit_tokens > chunk_size * (1 + _SIZE_TOLERANCE):
             flush()
@@ -116,6 +128,63 @@ def split_text(
 
     flush()
     return chunks
+
+
+def _extract_faq_units(text: str) -> list[str]:
+    """仅在显式 FAQ 标记后提取完整的编号问答单元。"""
+    marker = _FAQ_MARKER_RE.search(text)
+    if marker is None:
+        return _to_units(text)
+
+    units = _to_units(text[: marker.start()])
+    faq_tail = text[marker.end() :]
+    matches = list(_FAQ_ITEM_RE.finditer(faq_tail))
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(faq_tail)
+        item = faq_tail[match.start() : end].strip()
+        if item:
+            units.append(item)
+    return units
+
+
+def _looks_like_faq_unit(text: str) -> bool:
+    """编号、问号和答案标记齐全时才视为 FAQ 单元。"""
+    return _FAQ_ITEM_RE.match(text.strip()) is not None
+
+
+def _split_long_faq(unit: str, max_chars: int) -> list[str]:
+    """按句子装箱长答案，并在每块前重复问题与答案标记。"""
+    match = re.match(
+        r"(?P<question>\d+\s*[、.．]\s*.*?[？?])\s*答[：:](?P<answer>.*)",
+        unit.strip(),
+        re.DOTALL,
+    )
+    if match is None:
+        return [unit]
+
+    prefix = f"{match.group('question').strip()}答："
+    answer = match.group("answer").strip()
+    capacity = max_chars - len(prefix)
+    if capacity <= 0:
+        return [unit[:max_chars]]
+
+    sentences = [value for value in _SENTENCE_RE.split(answer) if value]
+    answer_pieces: list[str] = []
+    buffer = ""
+    for sentence in sentences:
+        while len(sentence) > capacity:
+            if buffer:
+                answer_pieces.append(buffer)
+                buffer = ""
+            answer_pieces.append(sentence[:capacity])
+            sentence = sentence[capacity:]
+        if buffer and len(buffer) + len(sentence) > capacity:
+            answer_pieces.append(buffer)
+            buffer = ""
+        buffer += sentence
+    if buffer or not answer_pieces:
+        answer_pieces.append(buffer)
+    return [prefix + piece for piece in answer_pieces]
 
 
 def _to_units(text: str) -> list[str]:
