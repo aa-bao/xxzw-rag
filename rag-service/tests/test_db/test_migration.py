@@ -16,6 +16,7 @@ EXPECTED_TABLES = {
     "rag_document",
     "rag_document_job",
     "rag_conversation",
+    "rag_conversation_kb",
     "rag_message",
     "rag_reference",
     "rag_query_log",
@@ -49,11 +50,11 @@ async def test_upgrade_head_creates_slice_schema(mysql_url: str) -> None:
     engine = create_async_engine(mysql_url)
     try:
         async with engine.connect() as connection:
-            tables, document_fks, conversation_fks = await connection.run_sync(
+            tables, document_fks, conversation_kb_fks = await connection.run_sync(
                 lambda sync_connection: (
                     set(inspect(sync_connection).get_table_names()),
                     inspect(sync_connection).get_foreign_keys("rag_document"),
-                    inspect(sync_connection).get_foreign_keys("rag_conversation"),
+                    inspect(sync_connection).get_foreign_keys("rag_conversation_kb"),
                 )
             )
     finally:
@@ -65,8 +66,9 @@ async def test_upgrade_head_creates_slice_schema(mysql_url: str) -> None:
         ("kb_id", "owner_user_id"),
         "rag_knowledge_base",
     )
+    # 会话不再持有 kb_id 列，多库绑定走关联表（复合 FK 对齐旧查询级联）
     assert _has_composite_fk(
-        conversation_fks,
+        conversation_kb_fks,
         ("kb_id", "owner_user_id"),
         "rag_knowledge_base",
     )

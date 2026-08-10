@@ -2,17 +2,33 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from fastapi.staticfiles import StaticFiles
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
 from src.api.router_auth import router as auth_router
 from src.api.router_chat import router as chat_router
 from src.api.router_docs import router as docs_router
 from src.api.router_kb import router as kb_router
+from src.api.router_settings import router as settings_router
+from src.api.router_users import router as users_router
+from src.db.models import ModelSetting
+from src.ingestion.worker import IngestWorker
+from src.models.client import ModelRelayClient
+from src.retrieval.chroma import ChromaRetrieval
 from src.shared.config import Settings
 from src.shared.errors import AppError
+from src.shared.runtime import RuntimeModelRelay
+
+
+def _make_settings_shell(runtime_relay: RuntimeModelRelay):
+    """可变壳：让 ModelRelayClient/ChatClient 通过 settings.model_relay.*
+    读取运行时配置（它们内部只依赖这一层，不感知热更新）。"""
+    view = runtime_relay.client_view()
+    return type("_SettingsShell", (), {"model_relay": view})()
 
 
 def create_app(
@@ -37,10 +53,72 @@ def create_app(
 
     app.state.session_factory = session_factory
 
+    # 运行时 model_relay 配置：默认来自 config.yaml，启动时从 DB 恢复已保存值
+    runtime_relay = RuntimeModelRelay.from_frozen(settings.model_relay)
+    app.state.runtime_relay = runtime_relay
+
+    # 共享 HTTP client + 可变壳：模型客户端内部逻辑不变，只换配置来源
+    model_client = httpx.AsyncClient(timeout=settings.model_relay.timeout_seconds)
+    app.state.model_relay_client = ModelRelayClient(_make_settings_shell(runtime_relay), model_client)
+    app.state.settings_shell = _make_settings_shell(runtime_relay)
+    # Fallback for tests that skip the startup probe
+    app.state.embedding_dimension: int = 0
+
+    @app.on_event("startup")
+    async def _startup_restore_and_probe() -> None:
+        # 1. 从 DB 恢复已保存的模型配置（若有），并重置维度缓存
+        try:
+            async with app.state.session_factory() as session:
+                stored = await session.scalar(select(ModelSetting).where(ModelSetting.id == 1))
+            if stored is not None:
+                runtime_relay.base_url = stored.base_url
+                runtime_relay.api_key = stored.api_key
+                runtime_relay.chat_model = stored.chat_model
+                runtime_relay.embedding_model = stored.embedding_model
+                # 保留原始形态：null 在 DB 中 = 与 chat 共用（客户端内部有 or 回退）
+                runtime_relay.embedding_base_url = stored.embedding_base_url or ""
+                runtime_relay.embedding_api_key = stored.embedding_api_key or ""
+                app.state.embedding_dimension = 0
+        except Exception:
+            # DB 不可用（如离线启动）不阻断启动，保留 config.yaml 默认值
+            pass
+
+        # 2. 探测 embedding 维度（失败不阻断，KB 创建时会重试）
+        try:
+            app.state.embedding_dimension = await app.state.model_relay_client.probe_dimension()
+        except Exception:
+            # Probe failed (offline / invalid key) — routers_KB will re-probe on demand
+            app.state.embedding_dimension = 0
+
+        # 3. 启动文档入库 worker（消费 pending ingest job）
+        chroma = ChromaRetrieval(
+            session_factory,
+            persist_dir=str(settings.rag.chroma_persist_dir),
+            mode=settings.rag.chroma_mode,
+            relay=app.state.model_relay_client,
+        )
+        app.state.ingest_chroma = chroma
+        app.state.ingest_worker = IngestWorker(
+            session_factory,
+            upload_root=Path(settings.upload.root_dir),
+            relay=app.state.model_relay_client,
+            chroma=chroma,
+        )
+        app.state.ingest_worker.start()
+
+    @app.on_event("shutdown")
+    async def _close_model_client() -> None:
+        worker = getattr(app.state, "ingest_worker", None)
+        if worker is not None:
+            await worker.stop()
+        await app.state.model_relay_client._client.aclose()
+
     app.include_router(auth_router)
     app.include_router(kb_router)
     app.include_router(docs_router)
     app.include_router(chat_router)
+    app.include_router(users_router)
+    app.include_router(settings_router)
 
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
@@ -63,4 +141,3 @@ def create_app(
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="spa")
 
     return app
-

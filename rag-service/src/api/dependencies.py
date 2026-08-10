@@ -50,3 +50,14 @@ async def require_user(
     if user_id is None:
         raise AppError("AUTH_REQUIRED", "请登录", status_code=401)
     return user_id
+
+
+async def require_admin(
+    user_id: int = Depends(require_user),
+    db: AsyncSession = Depends(_session_factory),
+) -> int:
+    """仅 account_admin 角色可访问，否则返回 403。"""
+    role = await db.scalar(select(User.role).where(User.id == user_id))
+    if role != "account_admin":
+        raise AppError("FORBIDDEN", "需要管理员权限", status_code=403)
+    return user_id

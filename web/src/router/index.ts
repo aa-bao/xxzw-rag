@@ -1,5 +1,6 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
+import { canAccess } from './guard'
 
 const router = createRouter({
   history: createWebHistory(),
@@ -8,14 +9,73 @@ const router = createRouter({
       path: '/login',
       name: 'login',
       component: () => import('../views/LoginView.vue'),
+      meta: { title: '登录' },
     },
     {
-      path: '/rag',
-      name: 'workspace',
-      component: () => import('../views/WorkspaceView.vue'),
+      path: '/',
+      component: () => import('../layouts/AppLayout.vue'),
       meta: { requiresAuth: true },
+      redirect: '/kb',
+      children: [
+        {
+          path: 'kb',
+          name: 'kb-list',
+          component: () => import('../views/KbListView.vue'),
+          meta: { title: '知识库' },
+        },
+        {
+          path: 'chat',
+          name: 'chat',
+          component: () => import('../views/ChatView.vue'),
+          meta: { title: '对话' },
+        },
+        {
+          path: 'settings',
+          name: 'settings',
+          component: () => import('../views/SettingsView.vue'),
+          meta: { title: '设置', roles: ['account_admin'] },
+        },
+        {
+          path: 'settings/users',
+          name: 'users',
+          component: () => import('../views/UsersView.vue'),
+          meta: { title: '用户管理', roles: ['account_admin'] },
+        },
+        {
+          path: 'kb/:id',
+          component: () => import('../views/KbDetailLayout.vue'),
+          meta: { requiresAuth: true, roles: ['account_admin'] },
+          redirect: (to) => ({ name: 'kb-docs', params: { id: to.params.id } }),
+          children: [
+            {
+              path: 'docs',
+              name: 'kb-docs',
+              component: () => import('../views/KbDocsView.vue'),
+              meta: { title: '文档', roles: ['account_admin'] },
+            },
+            {
+              path: 'docs/:docId',
+              name: 'kb-chunks',
+              component: () => import('../views/KbChunksView.vue'),
+              meta: { title: '分块', roles: ['account_admin'] },
+            },
+            {
+              path: 'testing',
+              name: 'kb-testing',
+              component: () => import('../views/KbTestingView.vue'),
+              meta: { title: '检索测试', roles: ['account_admin'] },
+            },
+            {
+              path: 'config',
+              name: 'kb-config',
+              component: () => import('../views/KbConfigView.vue'),
+              meta: { title: '配置', roles: ['account_admin'] },
+            },
+          ],
+        },
+      ],
     },
-    { path: '/:pathMatch(.*)*', redirect: '/rag' },
+    { path: '/:pathMatch(.*)*', redirect: '/kb' },
   ],
 })
 
@@ -25,10 +85,13 @@ router.beforeEach(async (to) => {
     await auth.init()
   }
   if (to.meta.requiresAuth && !auth.user) {
-    return '/login'
+    return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.path === '/login' && auth.user) {
-    return '/rag'
+    return { name: 'kb-list' }
+  }
+  if (auth.user && !canAccess(auth.user.role, to.meta.roles)) {
+    return { name: 'kb-list' }
   }
 })
 

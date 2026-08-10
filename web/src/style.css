@@ -1,0 +1,204 @@
+@import "tailwindcss";
+
+/* ═══════════ 设计令牌（docs/前端页面设计规范.md 第 2 节） ═══════════ */
+:root {
+  /* 背景 */
+  --bg-base: #F5F5F7;
+  --bg-subtle: #FAFAFC;
+  --bg-glass: rgba(255, 255, 255, 0.72);
+  --bg-glass-strong: rgba(255, 255, 255, 0.85);
+  --bg-elevated: #FFFFFF;
+
+  /* 边框与阴影 */
+  --border-subtle: rgba(0, 0, 0, 0.06);
+  --border-strong: rgba(0, 0, 0, 0.10);
+  --shadow-card: 0 10px 30px -5px rgba(0, 0, 0, 0.04), 0 0 1px 1px rgba(0, 0, 0, 0.02);
+  --shadow-card-hover: 0 20px 40px -10px rgba(0, 0, 0, 0.08), 0 0 1px 1px rgba(0, 0, 0, 0.04);
+  --shadow-modal: 0 25px 60px -12px rgba(0, 0, 0, 0.18), 0 0 1px 1px rgba(0, 0, 0, 0.04);
+
+  /* 文本 */
+  --text-primary: #1D1D1F;
+  --text-secondary: #86868B;
+  --text-tertiary: #AEAEB2;
+
+  /* 品牌与状态色 */
+  --accent-blue: #007AFF;
+  --accent-indigo: #5856D6;
+  --accent-orange: #FF9500;
+  --accent-green: #34C759;
+  --accent-red: #FF3B30;
+
+  /* 圆角 */
+  --radius-lg: 0.875rem;
+  --radius-2xl: 1rem;
+  --radius-3xl: 1.25rem;
+  --radius-full: 9999px;
+}
+
+/* Tailwind 主题扩展：允许 tailwind 类（bg-primary 等）引用令牌 */
+@theme {
+  --color-base: var(--bg-base);
+  --color-subtle: var(--bg-subtle);
+  --color-glass: var(--bg-glass);
+  --color-elevated: var(--bg-elevated);
+  --color-primary: var(--accent-blue);
+  --color-indigo: var(--accent-indigo);
+  --color-warning: var(--accent-orange);
+  --color-success: var(--accent-green);
+  --color-danger: var(--accent-red);
+  --color-ink: var(--text-primary);
+  --color-secondary: var(--text-secondary);
+  --color-tertiary: var(--text-tertiary);
+  --radius-lg: var(--radius-lg);
+  --radius-2xl: var(--radius-2xl);
+  --radius-3xl: var(--radius-3xl);
+  --radius-full: var(--radius-full);
+  --shadow-card: var(--shadow-card);
+  --shadow-card-hover: var(--shadow-card-hover);
+  --shadow-modal: var(--shadow-modal);
+  --font-sans: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+  --font-mono: "SF Mono", Menlo, Monaco, monospace;
+}
+
+/* ═══════════ 全局基础 ═══════════ */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html,
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+  background: var(--bg-base);
+  color: var(--text-primary);
+  -webkit-font-smoothing: antialiased;
+}
+
+/* 所有数值型数据：等宽数字，防止刷新跳动（规范 3.2） */
+.kpi-num,
+[class*="kpi"] {
+  font-variant-numeric: tabular-nums;
+}
+
+/* ═══════════ 玻璃拟态材质（规范 5.1） ═══════════ */
+.glass-surface {
+  background: var(--bg-glass);
+  backdrop-filter: blur(20px) saturate(180%);
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
+}
+
+.glass-strong {
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-modal);
+}
+
+/* 按下缩放兜底（规范 4.3，唯一允许的 CSS 变换动效） */
+.btn-press:active {
+  transform: scale(0.97);
+}
+
+/* 减弱动态效果 / 降低透明度（规范 6） */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .glass-surface,
+  .glass-strong {
+    background: rgba(255, 255, 255, 0.92);
+    backdrop-filter: none;
+    -webkit-backdrop-filter: none;
+  }
+}
+
+/* ═══════════ Element Plus 主题覆盖：令牌接入（规范 2） ═══════════ */
+:root {
+  --el-color-primary: var(--accent-blue);
+  --el-color-primary-hover: color-mix(in srgb, var(--accent-blue) 80%, #fff);
+  --el-color-primary-light-3: rgba(0, 122, 255, 0.3);
+  --el-color-primary-light-5: rgba(0, 122, 255, 0.15);
+  --el-color-primary-light-7: rgba(0, 122, 255, 0.08);
+  --el-color-primary-light-9: rgba(0, 122, 255, 0.05);
+  --el-color-primary-dark-2: #0066D6;
+  --el-color-success: var(--accent-green);
+  --el-color-warning: var(--accent-orange);
+  --el-color-danger: var(--accent-red);
+  --el-color-error: var(--accent-red);
+  --el-color-info: var(--text-secondary);
+  --el-text-color-primary: var(--text-primary);
+  --el-text-color-regular: var(--text-primary);
+  --el-text-color-secondary: var(--text-secondary);
+  --el-text-color-placeholder: var(--text-tertiary);
+  --el-border-color: var(--border-strong);
+  --el-border-color-light: var(--border-subtle);
+  --el-border-color-lighter: var(--border-subtle);
+  --el-bg-color: rgba(255, 255, 255, 0.85);
+  --el-bg-color-overlay: rgba(255, 255, 255, 0.95);
+  --el-fill-color-blank: transparent;
+  --el-border-radius-base: var(--radius-lg);
+  --el-font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Helvetica Neue", sans-serif;
+}
+
+/* Element Plus 组件细调：玻璃风格 */
+.el-button--primary {
+  --el-button-bg-color: var(--accent-blue);
+  --el-button-border-color: var(--accent-blue);
+  --el-button-hover-bg-color: var(--el-color-primary-hover);
+  --el-button-hover-border-color: var(--el-color-primary-hover);
+  --el-button-active-bg-color: var(--el-color-primary-dark-2);
+  --el-button-active-border-color: var(--el-color-primary-dark-2);
+  border-radius: var(--radius-lg);
+}
+
+.el-button:not(.el-button--primary) {
+  --el-button-bg-color: rgba(255, 255, 255, 0.6);
+  --el-button-hover-bg-color: rgba(255, 255, 255, 0.9);
+  border-radius: var(--radius-lg);
+}
+
+.el-input__wrapper {
+  border-radius: var(--radius-lg);
+  box-shadow: 0 0 0 1px var(--border-strong) inset;
+}
+
+.el-input__wrapper.is-focus {
+  box-shadow: 0 0 0 1px var(--accent-blue) inset !important;
+}
+
+.el-dialog {
+  border-radius: var(--radius-3xl);
+  background: var(--bg-glass-strong);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  box-shadow: var(--shadow-modal);
+}
+
+.el-dialog__title {
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.el-overlay {
+  background-color: rgba(0, 0, 0, 0.2);
+  backdrop-filter: blur(6px);
+  -webkit-backdrop-filter: blur(6px);
+}
+
+/* 玻璃表面上的 Element Plus 下拉/气泡浮层 */
+.el-popper {
+  border-radius: var(--radius-2xl) !important;
+  border: 1px solid var(--border-subtle) !important;
+  box-shadow: var(--shadow-modal) !important;
+}

@@ -70,6 +70,8 @@ def test_first_admin_is_created_without_echoing_password(
     monkeypatch.setenv("MODEL_RELAY_API_KEY", "test-key")
     monkeypatch.setenv("EMBEDDING_MODEL", "test-embedding")
     monkeypatch.setenv("CHAT_MODEL", "test-chat")
+    monkeypatch.setenv("EMBEDDING_BASE_URL", "http://127.0.0.1:9000/v1")
+    monkeypatch.setenv("EMBEDDING_API_KEY", "test-key")
 
     cli_app = _load_cli_app()
     assert cli_app is not None, "CLI app has not been implemented"

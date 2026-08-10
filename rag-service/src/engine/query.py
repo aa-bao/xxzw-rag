@@ -43,8 +43,9 @@ class QueryEngine:
         conversation_id: str,
         question: str,
         user_id: int,
-        kb_id: int,
+        kb_ids: list[int],
         top_k: int,
+        similarity_threshold: float | None = None,
     ) -> AsyncIterator[str]:
         # Load conversation and messages
         conv = await db.scalar(
@@ -95,18 +96,20 @@ class QueryEngine:
         db.add_all([user_msg, assistant_msg])
         await db.flush()
 
-        # Query log
+        # Query log（kb_id 记首个库，与旧结构兼容）
         query_log = QueryLog(
             conversation_id=conversation_id,
             owner_user_id=user_id,
-            kb_id=kb_id,
+            kb_id=kb_ids[0],
             user_message_id=user_msg.id,
             assistant_message_id=assistant_msg.id,
         )
         db.add(query_log)
 
-        # Retrieve
-        sources = await self._retrieval.retrieve(question, user_id, kb_id, top_k)
+        # Retrieve：对每个知识库分别检索，合并后按 score 降序整体截断 top_k
+        sources = await self._retrieval.retrieve_multi(
+            question, user_id, kb_ids, top_k, similarity_threshold
+        )
 
         if not sources:
             assistant_msg.content = self._empty_response
@@ -146,6 +149,8 @@ class QueryEngine:
                 chunk_id=src.chunk_id,
                 doc_id=src.doc_id,
                 doc_title=src.title,
+                kb_id=src.kb_id,
+                kb_name=src.kb_name,
                 snippet=src.content[:500],
                 score=src.score,
                 page=src.page,
@@ -173,6 +178,8 @@ class QueryEngine:
                             "snippet": s.content[:500],
                             "score": s.score,
                             "page": s.page,
+                            "kb_id": s.kb_id,
+                            "kb_name": s.kb_name,
                         }
                         for s in sources
                     ]

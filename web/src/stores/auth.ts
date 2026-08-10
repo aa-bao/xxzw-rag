@@ -1,19 +1,23 @@
 import { defineStore } from 'pinia'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { api } from '../api/client'
 
+export interface AuthUser {
+  id: number
+  username: string
+  role: string
+}
+
+export const ADMIN_ROLE = 'account_admin'
+
 export const useAuthStore = defineStore('auth', () => {
-  const user = ref<{ id: number; username: string; role: string } | null>(null)
+  const user = ref<AuthUser | null>(null)
   const loading = ref(false)
   const initialized = ref(false)
 
+  const isAdmin = computed(() => user.value?.role === ADMIN_ROLE)
+
   async function init() {
-    // 本地开发跳过登录：VITE_DEV_BYPASS_AUTH=true 时直接以 preview 用户进入
-    if (import.meta.env.DEV && import.meta.env.VITE_DEV_BYPASS_AUTH === 'true') {
-      user.value = { id: 1, username: 'preview', role: 'user' }
-      initialized.value = true
-      return
-    }
     try {
       const resp = await api.me()
       user.value = resp.data
@@ -34,5 +38,5 @@ export const useAuthStore = defineStore('auth', () => {
     user.value = null
   }
 
-  return { user, loading, initialized, init, login, logout }
+  return { user, loading, initialized, isAdmin, init, login, logout }
 })

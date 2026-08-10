@@ -35,6 +35,10 @@ class ModelRelayClient:
         self._client = client
 
     @property
+    def client(self) -> httpx.AsyncClient:
+        return self._client
+
+    @property
     def _base_url(self) -> str:
         return self._settings.model_relay.base_url
 
@@ -56,10 +60,19 @@ class ModelRelayClient:
         return ek if ek else self._api_key
 
     @property
+    def _embedding_max_retries(self) -> int:
+        return self._settings.model_relay.embedding_max_retries
+
+    @property
     def _retry_delay(self) -> float:
         return self._settings.model_relay.retry_base_delay_seconds
 
     async def embed(self, texts: list[str]) -> list[list[float]]:
+        # 豆包多模态向量模型：专用 /embeddings/multimodal 端点，单条输入、dict 响应，
+        # 批量由并发逐条调用实现（该模型不支持请求内批量）。
+        if self._embedding_model.startswith("doubao-embedding-vision"):
+            return await self._embed_multimodal(texts)
+
         url = f"{self._embedding_base_url}/embeddings"
         payload = {"model": self._embedding_model, "input": texts}
         headers = {"Authorization": f"Bearer {self._embedding_api_key}"}
@@ -80,6 +93,35 @@ class ModelRelayClient:
                 await asyncio.sleep(self._retry_delay * (2 ** attempt))
 
         raise last_error or ModelError("MODEL_UNEXPECTED", "unexpected")
+
+    async def _embed_multimodal(self, texts: list[str]) -> list[list[float]]:
+        url = f"{self._embedding_base_url}/embeddings/multimodal"
+        headers = {"Authorization": f"Bearer {self._embedding_api_key}"}
+
+        async def embed_one(text: str) -> list[float]:
+            payload = {
+                "model": self._embedding_model,
+                "input": [{"type": "text", "text": text}],
+                # 固定 1024 维：与历史 Chroma 集合维度一致，避免换模型后库重建
+                "dimensions": 1024,
+            }
+            last_error: ModelError | None = None
+            for attempt in range(self._embedding_max_retries):
+                response = await self._client.post(url, json=payload, headers=headers)
+                if response.status_code == 200:
+                    return response.json()["data"]["embedding"]
+
+                code, retryable = _classify_error(response.status_code)
+                last_error = ModelError(code, response.text or code, retryable=retryable)
+                if not retryable:
+                    raise last_error
+
+                if attempt < self._embedding_max_retries - 1:
+                    await asyncio.sleep(self._retry_delay * (2 ** attempt))
+
+            raise last_error or ModelError("MODEL_UNEXPECTED", "unexpected")
+
+        return list(await asyncio.gather(*(embed_one(text) for text in texts)))
 
     async def probe_dimension(self) -> int:
         vectors = await self.embed(["dimension probe"])

@@ -1,3 +1,5 @@
+import type { Kb } from '../types/kb'
+
 export interface ApiResponse<T = unknown> {
   success: boolean
   data: T
@@ -20,6 +22,51 @@ class Client {
     return body
   }
 
+  get<T>(url: string) {
+    return this.request<T>(url)
+  }
+
+  post<T>(url: string, data?: unknown) {
+    return this.request<T>(url, {
+      method: 'POST',
+      body: data === undefined ? undefined : JSON.stringify(data),
+    })
+  }
+
+  put<T>(url: string, data?: unknown) {
+    return this.request<T>(url, {
+      method: 'PUT',
+      body: data === undefined ? undefined : JSON.stringify(data),
+    })
+  }
+
+  delete<T>(url: string) {
+    return this.request<T>(url, { method: 'DELETE' })
+  }
+
+  async upload<T>(url: string, form: FormData): Promise<ApiResponse<T>> {
+    const resp = await fetch(`${this.base}${url}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      body: form,
+    })
+    const body = await resp.json()
+    if (!resp.ok) {
+      throw body
+    }
+    return body
+  }
+
+  /** SSE 查询：返回原始 Response，由调用方用 streamSse 消费 */
+  async queryRaw(url: string, body: unknown): Promise<Response> {
+    return fetch(`${this.base}${url}`, {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  }
+
   async login(username: string, password: string) {
     return this.request<{ id: number; username: string; role: string }>('/auth/login', {
       method: 'POST',
@@ -36,7 +83,7 @@ class Client {
   }
 
   async listKbs() {
-    return this.request<Array<{ id: number; name: string; active_collection: string; index_status: string }>>('/kb')
+    return this.request<Array<Kb>>('/kb')
   }
 
   async createKb(name: string, description?: string) {

@@ -25,6 +25,27 @@ from src.db.base import Base
 CURRENT_TIMESTAMP = text("CURRENT_TIMESTAMP")
 
 
+class ModelSetting(Base):
+    """模型配置持久化，单行（id=1）。api_key 明文存储（内部系统可接受），响应中绝不返回。"""
+
+    __tablename__ = "rag_model_setting"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    base_url: Mapped[str] = mapped_column(String(500), nullable=False)
+    api_key: Mapped[str] = mapped_column(String(1000), nullable=False)
+    chat_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
+    # null 表示与 chat 共用
+    embedding_base_url: Mapped[str | None] = mapped_column(String(500))
+    embedding_api_key: Mapped[str | None] = mapped_column(String(1000))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=CURRENT_TIMESTAMP,
+        server_onupdate=CURRENT_TIMESTAMP,
+    )
+
+
 class User(Base):
     __tablename__ = "rag_user"
     __table_args__ = (
@@ -88,6 +109,7 @@ class KnowledgeBase(Base):
     embedding_model: Mapped[str] = mapped_column(String(200), nullable=False)
     embedding_dimension: Mapped[int] = mapped_column(Integer, nullable=False)
     active_collection: Mapped[str] = mapped_column(String(200), nullable=False)
+    cover_path: Mapped[str | None] = mapped_column(String(1000))
     index_version: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("1"))
     index_status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'ready'"))
     similarity_threshold: Mapped[Decimal] = mapped_column(
@@ -186,23 +208,44 @@ class Conversation(Base):
     __tablename__ = "rag_conversation"
     __table_args__ = (
         UniqueConstraint("id", "owner_user_id", name="uk_conversation_owner"),
-        ForeignKeyConstraint(
-            ["kb_id", "owner_user_id"],
-            ["rag_knowledge_base.id", "rag_knowledge_base.owner_user_id"],
-            name="fk_conversation_kb_owner",
-            ondelete="CASCADE",
-        ),
         Index("idx_conversation_owner", "owner_user_id", "updated_at"),
     )
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     title: Mapped[str | None] = mapped_column(String(500))
-    kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP
     )
+
+
+class ConversationKb(Base):
+    """会话与知识库的多对多关联（会话可绑定多个知识库，提问时对每个库分别检索后合并）。"""
+
+    __tablename__ = "rag_conversation_kb"
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ["conversation_id"],
+            ["rag_conversation.id"],
+            name="fk_conversation_kb_conversation",
+            ondelete="CASCADE",
+        ),
+        ForeignKeyConstraint(
+            ["kb_id", "owner_user_id"],
+            ["rag_knowledge_base.id", "rag_knowledge_base.owner_user_id"],
+            name="fk_conversation_kb_kb_owner",
+            ondelete="CASCADE",
+        ),
+        UniqueConstraint("conversation_id", "kb_id", name="uk_conversation_kb"),
+        Index("idx_conversation_kb_kb", "kb_id", "owner_user_id"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
 
 
 class Message(Base):
@@ -244,6 +287,9 @@ class Reference(Base):
     chunk_id: Mapped[str | None] = mapped_column(String(160))
     doc_id: Mapped[int | None] = mapped_column(BigInteger)
     doc_title: Mapped[str | None] = mapped_column(String(500))
+    # 来源知识库快照（无 FK，kb_name 为冗余字段，供历史引用展示来源）
+    kb_id: Mapped[int | None] = mapped_column(BigInteger)
+    kb_name: Mapped[str | None] = mapped_column(String(500))
     snippet: Mapped[str | None] = mapped_column(Text)
     score: Mapped[Decimal | None] = mapped_column(Numeric(5, 4))
     page: Mapped[int | None] = mapped_column(Integer)

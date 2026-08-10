@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import uuid
 from pathlib import Path
 
@@ -168,6 +167,7 @@ async def test_upload_to_other_users_kb_is_not_found(
                 cookies={"rag_session": cookie},
             )
 
-        assert response.status_code == 404
+            # 旧路径保留归属校验：上传到他人知识库返回 404
+            assert response.status_code == 404
     finally:
         await engine.dispose()

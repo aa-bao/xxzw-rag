@@ -51,3 +51,29 @@ class TestPromptBuilder:
 
         msgs = build_messages("question?", [], [])
         assert msgs[-1]["content"] == "question?"
+
+    def test_source_with_kb_name_renders_kb_info_line(self) -> None:
+        from src.engine.prompt import build_messages
+        from src.retrieval.module import RetrievedChunk
+
+        sources = [
+            RetrievedChunk("c1", "content", 1, "a.txt", None, 0.9, kb_name="法规库")
+        ]
+        msgs = build_messages("question", [], sources)
+        user_content = msgs[-1]["content"]
+        assert "知识库: 法规库\n" in user_content
+        assert "内容: content" in user_content
+
+    def test_source_without_kb_name_matches_legacy_output(self) -> None:
+        from src.engine.prompt import UNTRUSTED_TEMPLATE, build_messages
+        from src.retrieval.module import RetrievedChunk
+
+        sources = [RetrievedChunk("c1", "content", 1, "a.txt", None, 0.9)]
+        msgs = build_messages("question", [], sources)
+        user_content = msgs[-1]["content"]
+        # kb_name 为 None 时与旧版逐字符一致
+        legacy = (
+            UNTRUSTED_TEMPLATE.format(id=1, title="a.txt", page="N/A", kb_info="", content="content")
+            + "\n\n用户问题: question"
+        )
+        assert user_content == legacy

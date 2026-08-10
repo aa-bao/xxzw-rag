@@ -22,8 +22,16 @@ class ParserFactory:
         import os
 
         ext = os.path.splitext(filename)[1].lower()
-        key = (ext, media_type.lower())
-        parser = _PARSERS.get(key)
+        # 优先精确匹配 (扩展名, media_type)；其次按扩展名兜底（不依赖客户端 content-type）
+        parser = _PARSERS.get((ext, media_type.lower()))
+        if parser is None:
+            parser = _PARSERS.get((ext, "*"))
+        if parser is None:
+            # 扩展名已注册但 media_type 不匹配：按扩展名解析
+            for (registered_ext, _mime), candidate in _PARSERS.items():
+                if registered_ext == ext:
+                    parser = candidate
+                    break
         if parser is None:
             raise AppError("PARSER_NOT_FOUND", f"不支持的文件类型: {ext}")
         result = parser.parse(data)
