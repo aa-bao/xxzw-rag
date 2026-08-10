@@ -69,6 +69,15 @@ class LlmSettings(FrozenModel):
     system_prompt: str = Field(min_length=1)
 
 
+class LexicalSettings(FrozenModel):
+    """SQLite FTS5 词法检索通道：索引文件位置与混合融合参数。"""
+
+    sqlite_path: Path
+    dense_top_k: int = Field(default=50, ge=1)
+    lexical_top_k: int = Field(default=50, ge=1)
+    rrf_rank_constant: int = Field(default=60, ge=1)
+
+
 class Settings(FrozenModel):
     app: AppSettings
     rag: RagSettings
@@ -76,6 +85,7 @@ class Settings(FrozenModel):
     database: DatabaseSettings
     upload: UploadSettings
     llm: LlmSettings
+    lexical: LexicalSettings | None = None
     empty_response: str = Field(min_length=1)
 
     @classmethod

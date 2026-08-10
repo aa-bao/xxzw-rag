@@ -35,8 +35,10 @@ services:
     volumes:
       - uploads:/app/data/uploads
       - chroma:/app/data/chroma
+      - fts:/app/data/fts
 
 volumes:
   mysqldata:
   uploads:
   chroma:
+  fts:
