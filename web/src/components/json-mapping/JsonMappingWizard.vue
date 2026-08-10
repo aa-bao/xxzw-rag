@@ -47,16 +47,34 @@
         ref="structureStepRef"
         @select="onCandidateSelect"
       />
-      <div v-else-if="state.step === 'fields'" class="wizard-coming">
-        字段映射步骤（下一步实现）
-      </div>
-      <div v-else-if="state.step === 'relations'" class="wizard-coming">
-        关系与层级步骤（下一步实现）
-      </div>
-      <div v-else-if="state.step === 'preview'" class="wizard-coming">
-        预览步骤（下一步实现）
-      </div>
-      <div v-else class="wizard-coming">确认与入库步骤（下一步实现）</div>
+      <JsonFieldMappingStep
+        v-else-if="state.step === 'fields'"
+        :profile="state.profile"
+        :mapping="state.mapping"
+        ref="fieldsStepRef"
+        @update:mapping="onMappingUpdated"
+      />
+      <JsonRelationStep
+        v-else-if="state.step === 'relations'"
+        :mapping="state.mapping"
+        @update:mapping="onMappingUpdated"
+      />
+      <JsonPreviewStep
+        v-else-if="state.step === 'preview'"
+        :rows="state.rows"
+        :total-rows="previewTotal"
+        :global-warnings="previewWarnings"
+        :error="previewError"
+      />
+      <JsonConfirmStep
+        v-else-if="state.step === 'confirm'"
+        :mapping="state.mapping"
+        :templates="templates"
+        :total-rows="state.rows.length"
+        :warning-count="confirmWarningCount"
+        :compatibility="compatibility"
+        ref="confirmStepRef"
+      />
     </div>
 
     <!-- 底部：返回 + 主操作 -->
@@ -91,13 +109,18 @@
 
 <script setup lang="ts">
 import { computed, ref, watch } from 'vue'
-import { ElMessageBox } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { Loading } from '@element-plus/icons-vue'
 import JsonUploadStep from './JsonUploadStep.vue'
 import JsonStructureStep from './JsonStructureStep.vue'
+import JsonFieldMappingStep from './JsonFieldMappingStep.vue'
+import JsonRelationStep from './JsonRelationStep.vue'
+import JsonPreviewStep from './JsonPreviewStep.vue'
+import JsonConfirmStep from './JsonConfirmStep.vue'
 import { useJsonMappingWizard } from './useJsonMappingWizard'
+import { checkMappingCompatibility, listMappingTemplates, createMappingTemplateVersion } from '../../api/structured'
 import { uploadDoc } from '../../api/docs'
-import type { SourceProfile } from '../../types/structured'
+import type { Compatibility, MappingTemplateSummary } from '../../types/structured'
 
 const props = defineProps<{
   visible: boolean
@@ -117,9 +140,23 @@ const busy = hook.busy
 const errorText = ref('')
 
 const structureStepRef = ref<InstanceType<typeof JsonStructureStep> | null>(null)
+const fieldsStepRef = ref<InstanceType<typeof JsonFieldMappingStep> | null>(null)
+const confirmStepRef = ref<InstanceType<typeof JsonConfirmStep> | null>(null)
+
+/** 预览相关 transient 数据（映射变更后清空） */
+const previewTotal = ref(0)
+const previewWarnings = ref<string[]>([])
+const previewError = ref<{ message: string; source_pointer: string | null } | null>(null)
+const templates = ref<MappingTemplateSummary[]>([])
+const compatibility = ref<Compatibility | null>(null)
 
 const stepNumber = computed(() => hook.stepNumber.value)
 const hasFile = computed(() => state.value.step === 'upload' && state.value.file !== null)
+const confirmWarningCount = computed(() =>
+  state.value.step === 'preview' || state.value.step === 'confirm'
+    ? state.value.rows.reduce((n, r) => n + r.warnings.length, 0)
+    : 0,
+)
 
 const primaryLabel = computed(() => {
   switch (state.value.step) {
@@ -133,6 +170,8 @@ const primaryLabel = computed(() => {
       return '预览'
     case 'preview':
       return '下一步'
+    case 'confirm':
+      return '确认入库'
     default:
       return ''
   }
@@ -143,6 +182,8 @@ const primaryDisabled = computed(() => {
   const s = state.value
   if (s.step === 'upload') return !hasFile.value
   if (s.step === 'structure') return structureStepRef.value?.selectedPath === null
+  if (s.step === 'fields') return fieldsStepRef.value?.canContinue !== true
+  if (s.step === 'confirm') return !confirmStepRef.value?.checked
   return false
 })
 
@@ -204,23 +245,114 @@ async function handlePrimary() {
   if (s.step === 'relations') {
     try {
       await hook.preview(s.mapping)
+      const preview = state.value
+      if (preview.step === 'preview') {
+        previewTotal.value = preview.rows.length
+        previewWarnings.value = []
+        previewError.value = null
+      }
     } catch (err) {
+      // 后端预览错误：留在本步骤并指向出错记录
       errorText.value = getErrorMessage(err)
+      previewError.value = {
+        message: errorText.value,
+        source_pointer: previewErrorSource(err),
+      }
     }
     return
   }
   if (s.step === 'preview') {
     try {
       hook.next()
+      await loadConfirmState()
     } catch (err) {
       errorText.value = getErrorMessage(err)
     }
+    return
+  }
+  if (s.step === 'confirm') {
+    await handleConfirmIngest()
+  }
+}
+
+/** 从后端错误中提取 source_pointer（预览错误定位） */
+function previewErrorSource(err: unknown): string | null {
+  if (err && typeof err === 'object') {
+    const e = err as { error?: { source_pointer?: string | null } }
+    return e.error?.source_pointer ?? null
+  }
+  return null
+}
+
+/** 进入确认步骤：加载模板列表 + 兼容性检查 */
+async function loadConfirmState() {
+  try {
+    const [templateList] = await Promise.all([listMappingTemplates()])
+    templates.value = templateList
+  } catch (err) {
+    templates.value = []
+    // 模板加载失败不阻塞入库（可新建模板）
+    console.warn('映射模板加载失败', err)
+  }
+  compatibility.value = null
+  const s = state.value
+  if (s.step !== 'confirm') return
+  // 以当前映射检查与所选模板的兼容性：默认选第一个模板（如有）
+  if (templates.value.length > 0) {
+    try {
+      compatibility.value = await checkMappingCompatibility(
+        props.kbId,
+        s.docId,
+        s.mapping,
+      )
+    } catch {
+      compatibility.value = null
+    }
+  }
+}
+
+/** 确认入库：创建/复用模板版本 → ingest（防双提交由 busy 保证） */
+async function handleConfirmIngest() {
+  if (busy.value !== null) return
+  const step = confirmStepRef.value
+  const s = state.value
+  if (s.step !== 'confirm' || !step) return
+  if (!step.checked) return
+  if (step.needsReconfirm && !step.breakingConfirmed) {
+    errorText.value = '请先确认破坏性变更后再入库'
+    return
+  }
+  const { template_id, name } = step.submitPayload()
+  try {
+    busy.value = 'create_version'
+    const created = await createMappingTemplateVersion({ template_id, name, mapping: s.mapping })
+    const ingested = await hook.confirmIngest(created.mapping_version_id)
+    void ingested
+    ElMessage.success(`入库任务已提交（模板 v${created.version}）`)
+  } catch (err) {
+    errorText.value = getErrorMessage(err)
+  } finally {
+    busy.value = null
   }
 }
 
 /** 结构步骤候选选择（卡片点击直接选中，不直接进入下一步） */
 function onCandidateSelect() {
   errorText.value = ''
+}
+
+/**
+ * 字段/关系步骤的受控映射更新：
+ * fields/relations 整体替换 state.mapping；若在 preview/confirm（映射被再次编辑），
+ * 则由状态机的 previewHash 失效机制要求重新预览。
+ */
+function onMappingUpdated(mapping: import('../../types/structured').MappingDefinition) {
+  const s = state.value
+  if (s.step === 'fields' || s.step === 'relations') {
+    hook.setStateMapping(mapping)
+    return
+  }
+  hook.applyMappingUpdate(mapping)
 }
 
 async function confirmCandidateSwitch(path: string): Promise<boolean> {
@@ -242,6 +374,7 @@ const fieldEditsExist = ref(false)
 
 function handleBack() {
   errorText.value = ''
+  previewError.value = null
   hook.back()
 }
 
@@ -249,6 +382,7 @@ function handleBack() {
 async function handleCloseRequest() {
   if (busy.value !== null) return
   if (state.value.step === 'upload' && !hasFile.value) {
+    resetTransient()
     emit('close')
     return
   }
@@ -258,10 +392,20 @@ async function handleCloseRequest() {
       '关闭向导',
       { confirmButtonText: '关闭', cancelButtonText: '继续配置', type: 'warning' },
     )
+    resetTransient()
     emit('close')
   } catch {
     /* 用户取消，继续向导 */
   }
+}
+
+/** 清空预览/模板等 transient 数据（关闭向导或重置时） */
+function resetTransient() {
+  previewTotal.value = 0
+  previewWarnings.value = []
+  previewError.value = null
+  templates.value = []
+  compatibility.value = null
 }
 
 function getErrorMessage(err: unknown): string {
@@ -281,6 +425,7 @@ watch(
       hook.setFile(null)
       errorText.value = ''
       fieldEditsExist.value = false
+      resetTransient()
     }
   },
 )

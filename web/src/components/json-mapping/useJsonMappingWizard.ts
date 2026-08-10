@@ -143,6 +143,20 @@ export function useJsonMappingWizard(kbId: number) {
     previewHash.value = null
   }
 
+  /** fields/relations 步骤的整体映射替换（保持 profile 供返回步骤使用） */
+  function setStateMapping(mapping: MappingDefinition): void {
+    const s = state.value
+    if (s.step === 'fields') {
+      state.value = { step: 'fields', docId: s.docId, profile: s.profile, mapping }
+      return
+    }
+    if (s.step === 'relations') {
+      state.value = { step: 'relations', docId: s.docId, mapping }
+      return
+    }
+    throw new Error(`当前步骤（${s.step}）不能直接替换映射`)
+  }
+
   /** 5→6：仅当预览行与当前映射一致（未发生破坏性变更）才允许进入确认 */
   function next() {
     const s = state.value
@@ -224,6 +238,7 @@ export function useJsonMappingWizard(kbId: number) {
     back,
     preview,
     applyMappingUpdate,
+    setStateMapping,
     confirmIngest,
   }
 }

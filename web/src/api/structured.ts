@@ -41,6 +41,17 @@ export async function previewJson(
   ).data
 }
 
+/** 解析后端 JSON 预览错误：返回 { message, source_pointer? }（前端不重建转换） */
+export function previewErrorMessage(err: unknown): { message: string; source_pointer: string | null } {
+  if (err && typeof err === 'object') {
+    const e = err as { error?: { code?: string; message?: string; source_pointer?: string | null } }
+    const message = e.error?.message ?? e.error?.code ?? ''
+    const pointer = e.error?.source_pointer ?? null
+    if (message) return { message, source_pointer: pointer }
+  }
+  return { message: '预览失败，请重试', source_pointer: null }
+}
+
 export async function listMappingTemplates(): Promise<MappingTemplateSummary[]> {
   return (await api.get<MappingTemplateSummary[]>('/mapping-templates')).data
 }
