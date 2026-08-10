@@ -10,9 +10,11 @@ _LINE_RE = re.compile(r"\n")
 _SENTENCE_RE = re.compile(r"(?<=[。！？；!?；…])")
 _FAQ_MARKER_RE = re.compile(
     r"(?:^|(?<=[。！？!?]))[ \t]*(?:#{1,6}[ \t]*)?"
-    r"(?:[一二三四五六七八九十百]+、[ \t]*)?FAQ(?=$|[\s\d])",
+    r"(?:[一二三四五六七八九十百]+、[ \t]*)?"
+    r"FAQ(?=$|\s|\d+\s*[、.．])",
     re.IGNORECASE | re.MULTILINE,
 )
+_FAQ_CANDIDATE_RE = re.compile(r"(?<!\d)\d+\s*[、.．]")
 _FAQ_ITEM_RE = re.compile(
     r"(?<!\d)\d+\s*[、.．]\s*.*?[？?]\s*答[：:]",
     re.DOTALL,
@@ -152,15 +154,20 @@ def _extract_faq_units(text: str) -> list[str]:
     section = _FAQ_SECTION_RE.search(faq_tail)
     faq_end = section.start() if section is not None else len(faq_tail)
     faq_region = faq_tail[:faq_end]
-    matches = list(_FAQ_ITEM_RE.finditer(faq_region))
-    if not matches:
+    candidates = list(_FAQ_CANDIDATE_RE.finditer(faq_region))
+    item_starts: list[re.Match[str]] = []
+    for index, candidate in enumerate(candidates):
+        end = candidates[index + 1].start() if index + 1 < len(candidates) else len(faq_region)
+        if _FAQ_ITEM_RE.match(faq_region[candidate.start() : end]):
+            item_starts.append(candidate)
+    if not item_starts:
         return _to_units(text)
 
     units = _to_units(text[: marker.start()])
-    units.extend(_to_units(faq_region[: matches[0].start()]))
-    for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(faq_region)
-        item = faq_region[match.start() : end].strip()
+    units.extend(_to_units(faq_region[: item_starts[0].start()]))
+    for index, item_start in enumerate(item_starts):
+        end = item_starts[index + 1].start() if index + 1 < len(item_starts) else len(faq_region)
+        item = faq_region[item_start.start() : end].strip()
         if item:
             units.append(item)
     units.extend(_to_units(faq_tail[faq_end:]))

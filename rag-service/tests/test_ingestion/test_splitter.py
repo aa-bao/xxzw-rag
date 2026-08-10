@@ -149,3 +149,35 @@ def test_faq_stops_before_following_markdown_section() -> None:
     faq_chunk = next(value for value in contents if value.startswith("1、如何处理？"))
     assert "后续章节" not in faq_chunk
     assert any("# 后续章节" in value and "后续正文。" in value for value in contents)
+
+
+def test_numbered_answer_steps_do_not_start_a_new_faq_item() -> None:
+    text = (
+        "# FAQ"
+        "1、如何操作？答：步骤如下：1、先准备。2、再提交。"
+        "2、如何撤销？答：联系管理员。"
+    )
+    chunks = split_text(1, text, chunk_size=64, overlap=0)
+    contents = [chunk["content"] for chunk in chunks]
+    first = next(value for value in contents if value.startswith("1、如何操作？"))
+    second = next(value for value in contents if value.startswith("2、如何撤销？"))
+    assert "1、先准备。2、再提交。" in first
+    assert "如何撤销" not in first
+    assert second == "2、如何撤销？答：联系管理员。"
+
+
+def test_faq_followed_by_version_digits_is_not_a_marker() -> None:
+    text = "FAQ2024版本说明。1、这是什么功能？答：这是普通正文中的问答说明。"
+    chunks = split_text(1, text, chunk_size=20, overlap=0)
+    contents = [chunk["content"] for chunk in chunks]
+    assert any("FAQ2024版本说明。" in value for value in contents)
+    assert not any("1、这是什么功能？" in value and "普通正文中的问答说明" in value for value in contents)
+
+
+def test_faq_stops_before_following_numbered_section() -> None:
+    text = "# FAQ\n1、如何处理？答：按流程处理。\n十、附则\n附则正文。"
+    chunks = split_text(1, text, chunk_size=512, overlap=0)
+    contents = [chunk["content"] for chunk in chunks]
+    faq_chunk = next(value for value in contents if value.startswith("1、如何处理？"))
+    assert "附则" not in faq_chunk
+    assert any("十、附则" in value and "附则正文。" in value for value in contents)
