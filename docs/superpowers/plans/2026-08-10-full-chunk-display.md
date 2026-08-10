@@ -108,4 +108,3 @@ Expected: all three show the complete body, preserve embedded newlines, grow ver
 git add web/src/views/KbChunksView.vue web/src/views/KbDocsView.vue web/src/views/KbTestingView.vue
 git commit -m "fix: show complete knowledge chunks"
 ```
-
