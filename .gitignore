@@ -17,3 +17,4 @@ rag-service/cookies.txt
 .claude/scheduled_tasks.lock
 .serena/
 test/
+.worktrees/
