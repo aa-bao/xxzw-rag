@@ -23,6 +23,29 @@ describe('renderChatMarkdown', () => {
       'data-reference-index',
     )
   })
+
+  it('preserves Markdown links, images, and disabled HTML as protected content', () => {
+    const directLink = renderChatMarkdown('[1](https://example.com)', 1)
+    expect(directLink).toContain('<a href="https://example.com">1</a>')
+    expect(directLink).not.toContain('chat-view__inline-cite')
+
+    const nestedLink = renderChatMarkdown(
+      '[link [1]](https://example.com/[1])',
+      1,
+    )
+    expect(nestedLink).toContain(
+      '<a href="https://example.com/%5B1%5D">link [1]</a>',
+    )
+    expect(nestedLink).not.toContain('chat-view__inline-cite')
+
+    const image = renderChatMarkdown('![alt [1]](image.png)', 1)
+    expect(image).toContain('<img src="image.png" alt="alt [1]">')
+    expect(image).not.toContain('chat-view__inline-cite')
+
+    const disabledHtml = renderChatMarkdown('<span>[1]</span>', 1)
+    expect(disabledHtml).toContain('&lt;span&gt;[1]&lt;/span&gt;')
+    expect(disabledHtml).not.toContain('chat-view__inline-cite')
+  })
 })
 
 describe('citationIndexFromClick', () => {
@@ -43,4 +66,20 @@ describe('citationIndexFromClick', () => {
       ),
     ).toBeNull()
   })
+
+  it.each(['', ' ', '0.5', '0e0'])(
+    'rejects a non-canonical reference index attribute %j',
+    (value) => {
+      const root = document.createElement('div')
+      root.innerHTML = `<button data-reference-index="${value}">source</button>`
+      const button = root.querySelector('button')!
+
+      expect(
+        citationIndexFromClick(
+          { target: button, currentTarget: root } as unknown as MouseEvent,
+          2,
+        ),
+      ).toBeNull()
+    },
+  )
 })

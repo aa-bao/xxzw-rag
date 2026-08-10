@@ -6,30 +6,86 @@ interface CitationEnvironment {
 
 const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
 
-md.inline.ruler.before('emphasis', 'chat_citation', (state, silent) => {
-  if (state.src.charCodeAt(state.pos) !== 0x5b || state.linkLevel !== 0) return false
-
-  const source = state.src.slice(state.pos)
-  const match = /^\[(\d+)\]/.exec(source) ?? /^\[(\d+(?:##\d+)*)#\]?/.exec(source)
-  if (!match) return false
-
+md.core.ruler.after('inline', 'chat_citations', (state) => {
   const referenceCount = Number((state.env as CitationEnvironment).referenceCount)
-  const ids = match[1].split('##').map(Number)
-  if (
-    !Number.isInteger(referenceCount) ||
-    ids.some((id) => !Number.isInteger(id) || id < 1 || id > referenceCount)
-  ) {
-    return false
-  }
 
-  if (!silent) {
-    for (const id of ids) {
-      const token = state.push('chat_citation', '', 0)
-      token.meta = { referenceIndex: id - 1 }
+  for (const blockToken of state.tokens) {
+    if (blockToken.type !== 'inline' || !blockToken.children) continue
+
+    const output = []
+    let linkDepth = 0
+
+    for (const token of blockToken.children) {
+      if (token.type === 'link_open') {
+        linkDepth += 1
+        output.push(token)
+        continue
+      }
+      if (token.type === 'link_close') {
+        linkDepth = Math.max(0, linkDepth - 1)
+        output.push(token)
+        continue
+      }
+      if (
+        token.type !== 'text' ||
+        linkDepth > 0 ||
+        /<\/?[A-Za-z][^>]*>/.test(token.content)
+      ) {
+        output.push(token)
+        continue
+      }
+
+      let textStart = 0
+      let position = 0
+      let transformed = false
+      while (position < token.content.length) {
+        if (token.content.charCodeAt(position) !== 0x5b) {
+          position += 1
+          continue
+        }
+
+        const source = token.content.slice(position)
+        const match = /^\[(\d+)\]/.exec(source) ?? /^\[(\d+(?:##\d+)*)#\]?/.exec(source)
+        if (!match) {
+          position += 1
+          continue
+        }
+
+        const ids = match[1].split('##').map(Number)
+        const valid =
+          Number.isInteger(referenceCount) &&
+          ids.every((id) => Number.isInteger(id) && id >= 1 && id <= referenceCount)
+        if (!valid) {
+          position += match[0].length
+          continue
+        }
+
+        if (position > textStart) {
+          const textToken = new state.Token('text', '', 0)
+          textToken.content = token.content.slice(textStart, position)
+          output.push(textToken)
+        }
+        for (const id of ids) {
+          const citationToken = new state.Token('chat_citation', '', 0)
+          citationToken.meta = { referenceIndex: id - 1 }
+          output.push(citationToken)
+        }
+        transformed = true
+        position += match[0].length
+        textStart = position
+      }
+
+      if (!transformed) {
+        output.push(token)
+      } else if (textStart < token.content.length) {
+        const textToken = new state.Token('text', '', 0)
+        textToken.content = token.content.slice(textStart)
+        output.push(textToken)
+      }
     }
+
+    blockToken.children = output
   }
-  state.pos += match[0].length
-  return true
 })
 
 md.renderer.rules.chat_citation = (tokens, index) => {
@@ -51,6 +107,9 @@ export function citationIndexFromClick(
   const button = event.target.closest('button[data-reference-index]')
   if (!button || !event.currentTarget.contains(button)) return null
 
-  const index = Number(button.getAttribute('data-reference-index'))
+  const rawIndex = button.getAttribute('data-reference-index')
+  if (rawIndex === null || !/^(0|[1-9]\d*)$/.test(rawIndex)) return null
+
+  const index = Number(rawIndex)
   return Number.isInteger(index) && index >= 0 && index < referenceCount ? index : null
 }
