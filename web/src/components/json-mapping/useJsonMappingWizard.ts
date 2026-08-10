@@ -1,4 +1,4 @@
-import { computed, readonly, ref } from 'vue'
+import { computed, ref } from 'vue'
 import type {
   MappingDefinition,
   PreviewRow,
@@ -210,10 +210,10 @@ export function useJsonMappingWizard(kbId: number) {
   }
 
   return {
-    state: readonly(state),
-    busy: readonly(busy),
-    ingested: readonly(ingested),
-    previewHash: readonly(previewHash),
+    state,
+    busy,
+    ingested,
+    previewHash,
     lastError,
     stepNumber: stepNumberValue,
     api,

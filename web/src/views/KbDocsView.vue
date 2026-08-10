@@ -16,6 +16,16 @@
       v-model:visible="uploadVisible"
       :kb-id="kbId"
       @uploaded="handleUploaded"
+      @open-json-wizard="handleOpenJsonWizard"
+    />
+
+    <!-- ══ JSON 映射向导：JSON/JSONL 结构化入库 ══ -->
+    <JsonMappingWizard
+      v-if="wizardVisible && kbId !== null"
+      :visible="wizardVisible"
+      :kb-id="kbId"
+      @close="wizardVisible = false"
+      @ingested="handleWizardIngested"
     />
 
     <!-- 首次加载 -->
@@ -401,6 +411,7 @@ import {
 import { listChunks } from '../api/retrieval'
 import type { ChunkInfo } from '../api/retrieval'
 import UploadDialog from '../components/UploadDialog.vue'
+import JsonMappingWizard from '../components/json-mapping/JsonMappingWizard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -783,6 +794,38 @@ const uploadVisible = ref(false)
 function handleUploaded(doc: DocInfo) {
   docs.value = [...docs.value, doc]
   pollDoc(doc.id)
+}
+
+/* ── JSON 映射向导 ── */
+const wizardVisible = ref(false)
+const wizardDocId = ref<number | null>(null)
+
+/** JSON/JSONL 文件：关闭上传弹窗并打开映射向导（不进入 legacy 队列） */
+function handleOpenJsonWizard(file: File) {
+  // 单文件向导：一次只打开一个 JSON 会话
+  void file
+  uploadVisible.value = false
+  wizardVisible.value = true
+}
+
+/** 向导确认入库成功：追加文档并轮询新状态（awaiting_mapping → ... → done） */
+function handleWizardIngested(payload: { docId: number; jobId: number }) {
+  wizardVisible.value = false
+  wizardDocId.value = payload.docId
+  const doc: DocInfo = {
+    id: payload.docId,
+    title: 'JSON 文档',
+    source: 'JSON 映射',
+    source_type: 'file',
+    status: 'pending',
+    chunk_count: 0,
+    file_size_bytes: null,
+    error_message: null,
+    created_at: new Date().toISOString(),
+    ingested_at: null,
+  }
+  docs.value = [...docs.value, doc]
+  pollDoc(payload.docId)
 }
 
 /* ── 轮询 docStatus：2 秒间隔，直到 done/failed，卸载清理 ── */
