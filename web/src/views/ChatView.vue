@@ -92,7 +92,8 @@
               <div
                 v-else
                 class="chat-view__text chat-view__text--md"
-                v-html="renderMd(msg.content)"
+                v-html="renderChatMarkdown(msg.content, msg.references.length)"
+                @click="handleCitationClick($event, msg)"
               ></div>
 
               <!-- 文献引用角标 [1] [2] …（仅助手消息） -->
@@ -121,7 +122,10 @@
             </div>
             <span class="chat-view__role">助手</span>
             <div v-if="streamingContent" class="chat-view__bubble chat-view__bubble--assistant" aria-live="polite">
-              <div class="chat-view__text chat-view__text--md" v-html="renderMd(streamingContent)"></div>
+              <div
+                class="chat-view__text chat-view__text--md"
+                v-html="renderChatMarkdown(streamingContent, 0)"
+              ></div>
             </div>
             <div v-else class="chat-view__thinking glass-surface" aria-live="polite">
               <span class="chat-view__thinking-label">正在思考</span>
@@ -214,7 +218,6 @@ import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
 import { ChatDotRound, Close, Delete, Document, Plus, Promotion } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import MarkdownIt from 'markdown-it'
 import {
   createConversation,
   deleteConversation,
@@ -226,6 +229,7 @@ import type { ChatMessageInfo, ConversationInfo, ReferenceInfo } from '../api/ch
 import { listKbs } from '../api/kb'
 import type { KbInfo } from '../api/kb'
 import { streamSse } from '../api/sse'
+import { citationIndexFromClick, renderChatMarkdown } from '../utils/chatCitations'
 
 const route = useRoute()
 
@@ -252,10 +256,15 @@ const activeRefStart = ref(0)
 const activeRefMessageKey = ref('')
 
 function openRefs(msg: ChatMessageInfo, index: number) {
-  activeRefs.value = msg.references
-  activeRefStart.value = 0
+  activeRefs.value = msg.references.slice(index)
+  activeRefStart.value = index
   activeRefMessageKey.value = `${msg.role}-${msg.content.slice(0, 20)}-${index}`
   drawerOpen.value = true
+}
+
+function handleCitationClick(event: MouseEvent, msg: ChatMessageInfo) {
+  const index = citationIndexFromClick(event, msg.references.length)
+  if (index !== null) openRefs(msg, index)
 }
 
 /* ── 派生状态 ── */
@@ -308,13 +317,6 @@ const hasCover = computed(() => {
   const kb = kbs.value.find((k) => selectedKbIds.value.includes(k.id))
   return !!kb?.cover_url
 })
-
-/* ── Markdown 渲染（markdown-it，html: false 默认转义，防 XSS） ── */
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true })
-
-function renderMd(content: string): string {
-  return md.render(content || '')
-}
 
 /* ── 动效（规范 4.4：内容进入弹簧 y 8px → 0 + 淡入） ── */
 const msgMotion = {
@@ -988,6 +990,29 @@ onMounted(async () => {
 
 .chat-view__cite:hover {
   background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
+.chat-view__text--md :deep(.chat-view__inline-cite) {
+  display: inline;
+  padding: 1px 5px;
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 35%, transparent);
+  border-radius: var(--radius-lg);
+  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
+  color: var(--accent-blue);
+  font: inherit;
+  font-size: 0.86em;
+  font-weight: 600;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.chat-view__text--md :deep(.chat-view__inline-cite:hover) {
+  background: color-mix(in srgb, var(--accent-blue) 18%, transparent);
+}
+
+.chat-view__text--md :deep(.chat-view__inline-cite:focus-visible) {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: 2px;
 }
 
 /* ── Markdown 内容（v-html 由 markdown-it 渲染，html: false 已转义） ── */
