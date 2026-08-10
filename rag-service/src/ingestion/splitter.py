@@ -196,7 +196,7 @@ def _split_long_faq(unit: str, max_chars: int) -> list[str]:
     answer = match.group("answer").strip()
     capacity = max_chars - len(prefix)
     if capacity <= 0:
-        return [unit[:max_chars]]
+        return [unit[start : start + max_chars] for start in range(0, len(unit), max_chars)]
 
     sentences = [value for value in _SENTENCE_RE.split(answer) if value]
     answer_pieces: list[str] = []

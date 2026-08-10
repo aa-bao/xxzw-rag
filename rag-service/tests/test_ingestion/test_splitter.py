@@ -207,3 +207,13 @@ def test_chinese_numbered_answer_steps_stay_before_next_faq_item() -> None:
 def test_faq_item_allows_whitespace_after_candidate_boundary() -> None:
     chunks = split_text(1, "# FAQ\n  1、如何处理？答：按流程处理。", chunk_size=64, overlap=0)
     assert any(chunk["content"] == "1、如何处理？答：按流程处理。" for chunk in chunks)
+
+
+def test_faq_with_oversized_question_preserves_all_content() -> None:
+    question = f"1、{'超长问题' * 130}？"
+    unit = f"{question}答：答案仍需保留。"
+    chunks = split_text(1, f"# FAQ{unit}", chunk_size=256, overlap=0)
+    pieces = [chunk["content"] for chunk in chunks]
+    assert "".join(pieces) == unit
+    assert all(len(piece) <= 500 for piece in pieces)
+    assert any("答案仍需保留。" in piece for piece in pieces)
