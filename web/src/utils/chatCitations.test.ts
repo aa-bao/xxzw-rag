@@ -46,6 +46,31 @@ describe('renderChatMarkdown', () => {
     expect(disabledHtml).toContain('&lt;span&gt;[1]&lt;/span&gt;')
     expect(disabledHtml).not.toContain('chat-view__inline-cite')
   })
+
+  it('transforms citations outside paired HTML-like elements only', () => {
+    const html = renderChatMarkdown(
+      'Before [1] <span>[2]</span> after [3]',
+      3,
+    )
+
+    expect(html).toContain('data-reference-index="0"')
+    expect(html).not.toContain('data-reference-index="1"')
+    expect(html).toContain('data-reference-index="2"')
+    expect(html).toContain('&lt;span&gt;[2]&lt;/span&gt;')
+  })
+
+  it.each([
+    ['<!-- [1] --> [2]', '&lt;!-- [1] --&gt;'],
+    ['<!DOCTYPE note [1]> [2]', '&lt;!DOCTYPE note [1]&gt;'],
+    ['<?target [1]?> [2]', '&lt;?target [1]?&gt;'],
+    ['<![CDATA[[1]]]> [2]', '&lt;![CDATA[[1]]]&gt;'],
+  ])('protects HTML-like construct in %j', (content, protectedHtml) => {
+    const html = renderChatMarkdown(content, 2)
+
+    expect(html).toContain(protectedHtml)
+    expect(html).not.toContain('data-reference-index="0"')
+    expect(html).toContain('data-reference-index="1"')
+  })
 })
 
 describe('citationIndexFromClick', () => {
