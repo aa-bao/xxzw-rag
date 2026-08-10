@@ -32,6 +32,28 @@ class TestTruncateHistory:
 
 
 class TestPromptBuilder:
+    def test_system_prompt_requires_canonical_citations(self) -> None:
+        from src.engine.prompt import build_messages
+
+        system = build_messages("question", [], [])[0]["content"]
+        assert "[n]" in system
+        assert "[1][2]" in system
+        assert "不得使用 #" in system
+        assert "来源 id" in system
+
+    def test_source_ids_match_reference_order(self) -> None:
+        from src.engine.prompt import build_messages
+        from src.retrieval.module import RetrievedChunk
+
+        sources = [
+            RetrievedChunk("c1", "first", 1, "a.txt", None, 0.9),
+            RetrievedChunk("c2", "second", 2, "b.txt", None, 0.8),
+        ]
+        content = build_messages("question", [], sources)[-1]["content"]
+        assert content.index('<untrusted-source id="1">') < content.index(
+            '<untrusted-source id="2">'
+        )
+
     def test_sources_are_structurally_delimited(self) -> None:
         from src.engine.prompt import build_messages
         from src.retrieval.module import RetrievedChunk
