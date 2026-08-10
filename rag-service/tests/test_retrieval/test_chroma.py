@@ -168,6 +168,49 @@ async def test_retrieve_filters_chunks_below_similarity_threshold(
         await engine.dispose()
 
 
+async def test_retrieve_overfetches_and_reranks_exact_question(
+    migrated_mysql_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        owner_id, kb_id = await _seed_kb(factory, "faq", "kb_faq_v1")
+        ids = [f"c{i}" for i in range(20)]
+        documents = [f"无关候选内容{i}" for i in range(20)]
+        distances = [0.70 + i * 0.007 for i in range(20)]
+        ids[10] = "exact"
+        documents[10] = "规则。半托管商家承责？答：由商家承担。"
+        distances[10] = 0.77
+        result = {
+            "ids": [ids],
+            "documents": [documents],
+            "metadatas": [[{"doc_id": 1, "title": "FAQ"} for _ in ids]],
+            "distances": [distances],
+        }
+        collection = _RecordingChromaCollection(result)
+        module = ChromaRetrieval(factory)
+        monkeypatch.setattr(
+            module,
+            "_get_client",
+            lambda: _SingleCollectionClient(collection),
+        )
+
+        chunks = await module.retrieve(
+            "半托管商家承责？",
+            owner_user_id=owner_id,
+            kb_id=kb_id,
+            top_k=5,
+        )
+
+        assert collection.query_calls[0]["n_results"] == 20
+        candidate = next(chunk for chunk in chunks if chunk.chunk_id == "exact")
+        assert candidate.score == pytest.approx(0.23)
+        assert candidate.rank_score == pytest.approx(0.4225)
+    finally:
+        await engine.dispose()
+
+
 class _FakeChromaClient:
     """Minimal chromadb client double: records get_or_create, serves query results."""
 
@@ -191,6 +234,24 @@ class _FakeChromaCollection:
 
     def query(self, **kwargs: object) -> dict[str, object]:
         return self._query_result
+
+
+class _RecordingChromaCollection(_FakeChromaCollection):
+    def __init__(self, query_result: dict[str, object]) -> None:
+        super().__init__(query_result)
+        self.query_calls: list[dict[str, object]] = []
+
+    def query(self, **kwargs: object) -> dict[str, object]:
+        self.query_calls.append(kwargs)
+        return super().query(**kwargs)
+
+
+class _SingleCollectionClient:
+    def __init__(self, collection: _RecordingChromaCollection) -> None:
+        self._collection = collection
+
+    def get_collection(self, name: str) -> _RecordingChromaCollection:
+        return self._collection
 
 
 async def _seed_kb(factory, name: str, collection: str, *, owner_id: int | None = None) -> tuple[int, int]:

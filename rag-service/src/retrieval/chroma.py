@@ -8,6 +8,7 @@ from sqlalchemy import select
 
 from src.db.models import KnowledgeBase
 from src.retrieval.module import RetrievedChunk, RetrievalModule
+from src.retrieval.ranking import hybrid_score, lexical_score
 
 logger = logging.getLogger(__name__)
 
@@ -209,14 +210,15 @@ class ChromaRetrieval(RetrievalModule):
             logger.warning("Chroma collection %r unavailable: %s", collection_name, exc)
             return []
         try:
+            candidate_k = max(top_k * 4, 20)
             if self._relay is not None:
                 query_embeddings = await self._relay.embed([query])
                 result = collection.query(
-                    query_embeddings=query_embeddings, n_results=top_k
+                    query_embeddings=query_embeddings, n_results=candidate_k
                 )
             else:
                 # 无 relay（测试/降级）：让 Chroma 用默认 embedding function
-                result = collection.query(query_texts=[query], n_results=top_k)
+                result = collection.query(query_texts=[query], n_results=candidate_k)
         except Exception as exc:
             logger.warning("Chroma query on %r failed: %s", collection_name, exc)
             return []
@@ -225,7 +227,18 @@ class ChromaRetrieval(RetrievalModule):
         chunks = [replace(c, kb_id=kb_id, kb_name=kb.name) for c in chunks]
         if similarity_threshold is not None:
             chunks = [c for c in chunks if c.score >= similarity_threshold]
-        return chunks
+        chunks = [
+            replace(
+                chunk,
+                rank_score=hybrid_score(
+                    chunk.score,
+                    lexical_score(query, chunk.content),
+                ),
+            )
+            for chunk in chunks
+        ]
+        chunks.sort(key=lambda chunk: chunk.ordering_score, reverse=True)
+        return chunks[:top_k]
 
     @staticmethod
     def _to_chunks(result: dict[str, Any]) -> list[RetrievedChunk]:
@@ -248,6 +261,11 @@ class ChromaRetrieval(RetrievalModule):
                     # 集合创建时固定 hnsw:space=cosine，余弦距离取值 [0,2]：
                     # score=1-distance 即余弦相似度（负值=无关）
                     score=1.0 - float(distance) if distance is not None else 0.0,
+                    chunk_index=(
+                        _as_int(meta["chunk_index"])
+                        if meta.get("chunk_index") is not None
+                        else None
+                    ),
                 )
             )
         return chunks

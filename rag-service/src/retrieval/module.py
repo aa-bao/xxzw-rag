@@ -15,6 +15,13 @@ class RetrievedChunk:
     score: float
     kb_id: int | None = None
     kb_name: str | None = None
+    rank_score: float | None = None
+    chunk_index: int | None = None
+    is_neighbor: bool = False
+
+    @property
+    def ordering_score(self) -> float:
+        return self.rank_score if self.rank_score is not None else self.score
 
 
 class RetrievalModule:
@@ -46,5 +53,5 @@ class RetrievalModule:
             chunks.extend(
                 await self.retrieve(query, owner_user_id, kb_id, top_k, similarity_threshold)
             )
-        chunks.sort(key=lambda c: c.score, reverse=True)
+        chunks.sort(key=lambda c: c.ordering_score, reverse=True)
         return chunks[:top_k]
