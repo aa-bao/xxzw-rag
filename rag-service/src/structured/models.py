@@ -98,6 +98,36 @@ class MappingDefinition(BaseModel):
     requires_user_confirmation: bool = True
 
 
+class SuggestedField(BaseModel):
+    """建议器产出的字段角色建议（含置信度与依据规则 ID）。"""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    path: str
+    role: Role
+    name: str
+    confidence: float = 1.0
+    rule_ids: tuple[str, ...] = ()
+
+
+class MappingSuggestion(MappingDefinition):
+    """自动建议（确定性或 LLM 增强）的载体。
+
+    继承 MappingDefinition 的全部字段；恒 requires_user_confirmation=True，
+    必须经用户确认后才能保存为 MappingDefinition / 绑定文档。
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    fields: tuple[SuggestedField, ...] = ()
+
+    def field(self, path: str) -> SuggestedField:
+        for f in self.fields:
+            if f.path == path:
+                return f
+        raise KeyError(path)
+
+
 class SourceRecord(BaseModel):
     """流式解析产出的单条源记录。"""
 
