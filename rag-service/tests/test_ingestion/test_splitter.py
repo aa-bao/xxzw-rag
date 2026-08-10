@@ -217,3 +217,12 @@ def test_faq_with_oversized_question_preserves_all_content() -> None:
     assert "".join(pieces) == unit
     assert all(len(piece) <= 500 for piece in pieces)
     assert any("答案仍需保留。" in piece for piece in pieces)
+
+
+def test_oversized_faq_preserves_whitespace_at_hard_split_boundary() -> None:
+    question = f"1、{'问' * 495} \n\t问题？"
+    unit = f"{question}答：答案。"
+    chunks = split_text(1, f"# FAQ{unit}", chunk_size=256, overlap=0)
+    pieces = [chunk["content"] for chunk in chunks]
+    assert "".join(pieces) == unit
+    assert all(len(piece) <= 500 for piece in pieces)

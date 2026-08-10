@@ -124,7 +124,9 @@ def split_text(
             flush()
             pieces = [unit] if len(unit) <= 500 else _split_long_faq(unit, 500)
             for piece in pieces:
-                chunks.append(_make_chunk(doc_id, piece.strip(), len(chunks)))
+                if piece == "":
+                    continue
+                chunks.append(_make_chunk(doc_id, piece, len(chunks)))
             consumed += 1
             continue
         # 单单元超长（> 容忍上限）：flush 现有缓冲，单元自身按句/硬切细分
