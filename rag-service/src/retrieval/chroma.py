@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import replace
 from typing import Any
 
 from sqlalchemy import select
 
 from src.db.models import KnowledgeBase
+from src.retrieval.context import pack_context
 from src.retrieval.module import RetrievedChunk, RetrievalModule
 from src.retrieval.ranking import hybrid_score, lexical_score
 
@@ -99,6 +101,7 @@ class ChromaRetrieval(RetrievalModule):
                 "doc_id": c.get("doc_id"),
                 "title": c.get("title") or "",
                 "page": c.get("page"),
+                "chunk_index": c.get("chunk_index"),
             }
             for c in chunks
         ]
@@ -240,6 +243,79 @@ class ChromaRetrieval(RetrievalModule):
         chunks.sort(key=lambda chunk: chunk.ordering_score, reverse=True)
         return chunks[:top_k]
 
+    async def expand_context(
+        self,
+        query: str,
+        owner_user_id: int,
+        chunks: list[RetrievedChunk],
+        *,
+        seed_count: int = 2,
+        max_chunks: int = 8,
+        max_tokens: int = 2000,
+    ) -> list[RetrievedChunk]:
+        if not chunks or seed_count <= 0 or self._relay is None:
+            return pack_context(chunks, max_chunks=max_chunks, max_tokens=max_tokens)
+
+        try:
+            query_embeddings = await self._query_embeddings([query])
+            if not query_embeddings or not query_embeddings[0]:
+                raise ValueError("query embedding is unavailable")
+            query_embedding = [float(value) for value in query_embeddings[0]]
+            client = self._get_client()
+            if client is None:
+                raise RuntimeError("Chroma client is unavailable")
+
+            core_by_key = {
+                (chunk.kb_id, chunk.chunk_id): chunk
+                for chunk in chunks
+            }
+            expanded: list[RetrievedChunk] = []
+            for seed in chunks[:seed_count]:
+                if seed.kb_id is None:
+                    raise ValueError(f"core chunk {seed.chunk_id!r} has no kb_id")
+                seed_index = seed.chunk_index
+                if seed_index is None:
+                    seed_index = _chunk_index_from_id(seed.chunk_id)
+                if seed_index is None:
+                    raise ValueError(f"core chunk {seed.chunk_id!r} has no chunk index")
+
+                factory = self._session_factory
+                async with factory() as session:
+                    kb = await session.scalar(
+                        select(KnowledgeBase).where(
+                            KnowledgeBase.id == seed.kb_id,
+                            KnowledgeBase.owner_user_id == owner_user_id,
+                        )
+                    )
+                if kb is None:
+                    raise PermissionError(
+                        f"KB {seed.kb_id} is unavailable to user {owner_user_id}"
+                    )
+
+                collection_name = kb.active_collection or f"kb_{seed.kb_id}_v1"
+                collection = client.get_collection(name=collection_name)
+                result = collection.get(
+                    where={"doc_id": seed.doc_id},
+                    include=["documents", "metadatas", "embeddings"],
+                )
+                window = _neighbor_window(
+                    result,
+                    seed=seed,
+                    seed_index=seed_index,
+                    query_embedding=query_embedding,
+                    kb_name=kb.name,
+                    core_by_key=core_by_key,
+                )
+                if not window:
+                    raise ValueError(f"no adjacent window found for chunk {seed.chunk_id!r}")
+                expanded.extend(window)
+
+            expanded.extend(chunks)
+            return pack_context(expanded, max_chunks=max_chunks, max_tokens=max_tokens)
+        except Exception as exc:
+            logger.warning("Adjacent context expansion failed; using core chunks: %s", exc)
+            return pack_context(chunks, max_chunks=max_chunks, max_tokens=max_tokens)
+
     @staticmethod
     def _to_chunks(result: dict[str, Any]) -> list[RetrievedChunk]:
         ids = (result.get("ids") or [[]])[0] or []
@@ -261,11 +337,7 @@ class ChromaRetrieval(RetrievalModule):
                     # 集合创建时固定 hnsw:space=cosine，余弦距离取值 [0,2]：
                     # score=1-distance 即余弦相似度（负值=无关）
                     score=1.0 - float(distance) if distance is not None else 0.0,
-                    chunk_index=(
-                        _as_int(meta["chunk_index"])
-                        if meta.get("chunk_index") is not None
-                        else None
-                    ),
+                    chunk_index=_resolve_chunk_index(meta, str(ids[i])),
                 )
             )
         return chunks
@@ -278,3 +350,115 @@ def _as_int(value: Any) -> int:
         return int(value)
     except (TypeError, ValueError):
         return 0
+
+
+def _optional_int(value: Any) -> int | None:
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _chunk_index_from_id(chunk_id: str) -> int | None:
+    parts = chunk_id.split(":", 2)
+    return _optional_int(parts[1]) if len(parts) >= 2 else None
+
+
+def _resolve_chunk_index(metadata: dict[str, Any], chunk_id: str) -> int | None:
+    index = _optional_int(metadata.get("chunk_index"))
+    return index if index is not None else _chunk_index_from_id(chunk_id)
+
+
+def _flat_result_values(result: dict[str, Any], key: str) -> list[Any]:
+    values = result.get(key)
+    if values is None:
+        return []
+    if hasattr(values, "tolist"):
+        values = values.tolist()
+    if isinstance(values, tuple):
+        values = list(values)
+    if not isinstance(values, list):
+        return []
+    if len(values) == 1 and isinstance(values[0], (list, tuple)):
+        first = list(values[0])
+        if key != "embeddings" or not first or isinstance(first[0], (list, tuple)):
+            return first
+    return values
+
+
+def _cosine_similarity(left: list[float], right: list[float]) -> float:
+    if len(left) != len(right) or not left:
+        raise ValueError("embedding dimensions do not match")
+    left_norm = math.sqrt(sum(value * value for value in left))
+    right_norm = math.sqrt(sum(value * value for value in right))
+    if left_norm == 0.0 or right_norm == 0.0:
+        return 0.0
+    return sum(a * b for a, b in zip(left, right, strict=True)) / (left_norm * right_norm)
+
+
+def _neighbor_window(
+    result: dict[str, Any],
+    *,
+    seed: RetrievedChunk,
+    seed_index: int,
+    query_embedding: list[float],
+    kb_name: str,
+    core_by_key: dict[tuple[int | None, str], RetrievedChunk],
+) -> list[RetrievedChunk]:
+    ids = _flat_result_values(result, "ids")
+    documents = _flat_result_values(result, "documents")
+    metadatas = _flat_result_values(result, "metadatas")
+    embeddings = _flat_result_values(result, "embeddings")
+    wanted = {seed_index - 1, seed_index, seed_index + 1}
+    indexed: list[tuple[int, RetrievedChunk]] = []
+    for position, raw_id in enumerate(ids):
+        chunk_id = str(raw_id)
+        metadata = (
+            metadatas[position]
+            if position < len(metadatas) and isinstance(metadatas[position], dict)
+            else {}
+        )
+        index = _resolve_chunk_index(metadata, chunk_id)
+        doc_id = _optional_int(metadata.get("doc_id"))
+        if index not in wanted or doc_id != seed.doc_id:
+            continue
+
+        core = core_by_key.get((seed.kb_id, chunk_id))
+        if core is not None:
+            indexed.append((index, core))
+            continue
+        if position >= len(embeddings):
+            raise ValueError(f"stored embedding missing for chunk {chunk_id!r}")
+        raw_embedding = embeddings[position]
+        if hasattr(raw_embedding, "tolist"):
+            raw_embedding = raw_embedding.tolist()
+        if not isinstance(raw_embedding, (list, tuple)):
+            raise ValueError(f"stored embedding malformed for chunk {chunk_id!r}")
+        embedding = [float(value) for value in raw_embedding]
+        content = (
+            str(documents[position])
+            if position < len(documents) and documents[position] is not None
+            else ""
+        )
+        page = _optional_int(metadata.get("page"))
+        indexed.append(
+            (
+                index,
+                RetrievedChunk(
+                    chunk_id=chunk_id,
+                    content=content,
+                    doc_id=seed.doc_id,
+                    title=str(metadata.get("title") or seed.title),
+                    page=page,
+                    score=_cosine_similarity(query_embedding, embedding),
+                    kb_id=seed.kb_id,
+                    kb_name=kb_name,
+                    chunk_index=index,
+                    is_neighbor=True,
+                ),
+            )
+        )
+    indexed.sort(key=lambda item: item[0])
+    return [chunk for _, chunk in indexed]

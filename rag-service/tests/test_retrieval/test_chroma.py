@@ -211,6 +211,91 @@ async def test_retrieve_overfetches_and_reranks_exact_question(
         await engine.dispose()
 
 
+async def test_expand_context_only_expands_first_two_global_seeds(
+    migrated_mysql_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        owner_id, kb_id = await _seed_kb(factory, "context", "kb_context_v1")
+        collection = _ExpandableChromaCollection(
+            {
+                10: {
+                    "ids": ["10:2:left", "10:3:seed", "10:4:right"],
+                    "documents": ["left", "seed one", "right"],
+                    "metadatas": [
+                        {"doc_id": 10, "title": "one"},
+                        {"doc_id": 10, "title": "one"},
+                        {"doc_id": 10, "title": "one"},
+                    ],
+                    "embeddings": [[0.8, 0.6], [1.0, 0.0], [0.0, 1.0]],
+                },
+                20: {
+                    "ids": [["20:6:left", "20:7:seed", "20:8:right"]],
+                    "documents": [["left two", "seed two", "right two"]],
+                    "metadatas": [[
+                        {"doc_id": 20, "title": "two", "chunk_index": 6},
+                        {"doc_id": 20, "title": "two", "chunk_index": 7},
+                        {"doc_id": 20, "title": "two", "chunk_index": 8},
+                    ]],
+                    "embeddings": [[[0.0, 0.0], [1.0, 0.0], [-1.0, 0.0]]],
+                },
+            }
+        )
+        relay = _RecordingRelay([1.0, 0.0])
+        module = ChromaRetrieval(factory, relay=relay)
+        monkeypatch.setattr(module, "_get_client", lambda: _SingleCollectionClient(collection))
+        cores = [
+            _core("10:3:seed", 10, None, kb_id, 0.9),
+            _core("20:7:seed", 20, 7, kb_id, 0.8),
+            _core("30:1:core", 30, 1, kb_id, 0.7),
+            _core("40:1:core", 40, 1, kb_id, 0.6),
+            _core("50:1:core", 50, 1, kb_id, 0.5),
+        ]
+
+        expanded = await module.expand_context("question", owner_id, cores)
+
+        assert relay.calls == [["question"]]
+        assert collection.get_calls == [10, 20]
+        assert [chunk.chunk_id for chunk in expanded] == [
+            "10:2:left",
+            "10:3:seed",
+            "10:4:right",
+            "20:6:left",
+            "20:7:seed",
+            "20:8:right",
+            "30:1:core",
+            "40:1:core",
+        ]
+        assert len({chunk.chunk_id for chunk in expanded}) == len(expanded)
+        left = next(chunk for chunk in expanded if chunk.chunk_id == "10:2:left")
+        right = next(chunk for chunk in expanded if chunk.chunk_id == "10:4:right")
+        assert left.score == pytest.approx(0.8)
+        assert right.score == pytest.approx(0.0)
+        zero = next(chunk for chunk in expanded if chunk.chunk_id == "20:6:left")
+        assert zero.score == pytest.approx(0.0)
+        assert left.is_neighbor is True
+        assert right.is_neighbor is True
+        first_core = next(chunk for chunk in expanded if chunk.chunk_id == "10:3:seed")
+        assert first_core.is_neighbor is False
+        assert first_core.rank_score == pytest.approx(0.9)
+    finally:
+        await engine.dispose()
+
+
+async def test_expand_context_without_relay_degrades_to_packed_cores() -> None:
+    module = ChromaRetrieval(session_factory=object())
+    cores = [
+        _core("10:3:seed", 10, 3, 1, 0.9),
+        _core("20:7:seed", 20, 7, 1, 0.8),
+    ]
+
+    expanded = await module.expand_context("question", 1, cores)
+
+    assert expanded == cores
+
+
 class _FakeChromaClient:
     """Minimal chromadb client double: records get_or_create, serves query results."""
 
@@ -247,11 +332,54 @@ class _RecordingChromaCollection(_FakeChromaCollection):
 
 
 class _SingleCollectionClient:
-    def __init__(self, collection: _RecordingChromaCollection) -> None:
+    def __init__(self, collection: object) -> None:
         self._collection = collection
 
-    def get_collection(self, name: str) -> _RecordingChromaCollection:
+    def get_collection(self, name: str) -> object:
         return self._collection
+
+
+class _ExpandableChromaCollection:
+    def __init__(self, results_by_doc: dict[int, dict[str, object]]) -> None:
+        self._results_by_doc = results_by_doc
+        self.get_calls: list[int] = []
+
+    def get(self, *, where: dict[str, int], include: list[str]) -> dict[str, object]:
+        assert include == ["documents", "metadatas", "embeddings"]
+        doc_id = where["doc_id"]
+        self.get_calls.append(doc_id)
+        return self._results_by_doc[doc_id]
+
+
+class _RecordingRelay:
+    def __init__(self, embedding: list[float]) -> None:
+        self._embedding = embedding
+        self.calls: list[list[str]] = []
+
+    async def embed(self, texts: list[str]) -> list[list[float]]:
+        self.calls.append(texts)
+        return [self._embedding]
+
+
+def _core(
+    chunk_id: str,
+    doc_id: int,
+    chunk_index: int | None,
+    kb_id: int,
+    rank_score: float,
+) -> RetrievedChunk:
+    return RetrievedChunk(
+        chunk_id=chunk_id,
+        content=f"core {chunk_id}",
+        doc_id=doc_id,
+        title=f"doc {doc_id}",
+        page=None,
+        score=rank_score,
+        kb_id=kb_id,
+        kb_name="context",
+        rank_score=rank_score,
+        chunk_index=chunk_index,
+    )
 
 
 async def _seed_kb(factory, name: str, collection: str, *, owner_id: int | None = None) -> tuple[int, int]:

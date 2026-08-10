@@ -171,17 +171,27 @@ class IngestWorker:
                 if not await self._set_stage(job.id, doc.id, "embedding"):
                     return
                 MAX_EMBED_CHARS = 500
-                embed_items: list[dict[str, str]] = []
+                embed_items: list[dict[str, Any]] = []
                 for c in chunks:
                     content = c["content"]
                     if len(content) <= MAX_EMBED_CHARS:
-                        embed_items.append({"chunk_id": c["chunk_id"], "content": content})
+                        embed_items.append(
+                            {
+                                "chunk_id": c["chunk_id"],
+                                "content": content,
+                                "chunk_index": c["index"],
+                            }
+                        )
                         continue
                     for idx in range(0, len(content), MAX_EMBED_CHARS):
                         piece = content[idx : idx + MAX_EMBED_CHARS]
                         if piece.strip():
                             embed_items.append(
-                                {"chunk_id": f"{c['chunk_id']}#{idx}", "content": piece}
+                                {
+                                    "chunk_id": f"{c['chunk_id']}#{idx}",
+                                    "content": piece,
+                                    "chunk_index": c["index"],
+                                }
                             )
 
                 embeddings: list[list[float]] = []
@@ -201,6 +211,7 @@ class IngestWorker:
                         "doc_id": doc.id,
                         "title": doc.title,
                         "page": None,
+                        "chunk_index": it["chunk_index"],
                     }
                     for it in embed_items
                 ]

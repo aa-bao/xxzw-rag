@@ -162,6 +162,49 @@ async def test_worker_ingests_doc_and_marks_done(
             assert job.status == "done"
             assert job.finished_at is not None
         assert chroma.collections[f"kb_{kb.id}_v1"], "chunks must be written to chroma"
+        assert [
+            item["chunk_index"] for item in chroma.collections[f"kb_{kb.id}_v1"]
+        ] == list(range(len(chroma.collections[f"kb_{kb.id}_v1"])))
+    finally:
+        await engine.dispose()
+
+
+async def test_worker_preserves_chunk_index_for_hard_split_pieces(
+    migrated_mysql_url: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        kb = await _make_kb(factory)
+        text = "x" * 1100
+        file_dir = tmp_path / "ab" / "cd"
+        file_dir.mkdir(parents=True, exist_ok=True)
+        (tmp_path / "ab/cd/fake.txt").write_bytes(text.encode("utf-8"))
+        doc = await _make_doc(factory, kb, text)
+
+        transport = FakeEmbedTransport()
+        chroma = FakeChroma()
+        worker = await _worker(factory, transport, chroma, upload_root=tmp_path)
+        monkeypatch.setattr(
+            "src.ingestion.worker.split_text",
+            lambda *args, **kwargs: [
+                {"chunk_id": f"{doc.id}:7:hard", "content": text, "index": 7}
+            ],
+        )
+        try:
+            await worker._process_job(await _claim_job_for_doc(factory, doc.id))
+        finally:
+            await worker.stop()
+
+        items = chroma.collections[f"kb_{kb.id}_v1"]
+        grouped_indices: dict[str, set[int]] = {}
+        for item in items:
+            base_id = item["chunk_id"].split("#", 1)[0]
+            grouped_indices.setdefault(base_id, set()).add(item["chunk_index"])
+        assert len(items) == 3
+        assert grouped_indices == {f"{doc.id}:7:hard": {7}}
     finally:
         await engine.dispose()
 

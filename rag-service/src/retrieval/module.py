@@ -55,3 +55,18 @@ class RetrievalModule:
             )
         chunks.sort(key=lambda c: c.ordering_score, reverse=True)
         return chunks[:top_k]
+
+    async def expand_context(
+        self,
+        query: str,
+        owner_user_id: int,
+        chunks: list[RetrievedChunk],
+        *,
+        seed_count: int = 2,
+        max_chunks: int = 8,
+        max_tokens: int = 2000,
+    ) -> list[RetrievedChunk]:
+        """Apply bounded packing when a retrieval backend has no adjacency support."""
+        from src.retrieval.context import pack_context
+
+        return pack_context(chunks, max_chunks=max_chunks, max_tokens=max_tokens)
