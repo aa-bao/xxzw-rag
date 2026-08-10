@@ -269,7 +269,9 @@ class ChromaRetrieval(RetrievalModule):
                 (chunk.kb_id, chunk.chunk_id): chunk
                 for chunk in chunks
             }
-            expanded: list[RetrievedChunk] = []
+            seed_groups: dict[
+                tuple[int, int], list[tuple[RetrievedChunk, int]]
+            ] = {}
             for seed in chunks[:seed_count]:
                 if seed.kb_id is None:
                     raise ValueError(f"core chunk {seed.chunk_id!r} has no kb_id")
@@ -278,40 +280,81 @@ class ChromaRetrieval(RetrievalModule):
                     seed_index = _chunk_index_from_id(seed.chunk_id)
                 if seed_index is None:
                     raise ValueError(f"core chunk {seed.chunk_id!r} has no chunk index")
+                seed_groups.setdefault((seed.kb_id, seed.doc_id), []).append(
+                    (seed, seed_index)
+                )
 
+            expanded_windows: list[RetrievedChunk] = []
+            for (kb_id, doc_id), grouped_seeds in seed_groups.items():
                 factory = self._session_factory
                 async with factory() as session:
                     kb = await session.scalar(
                         select(KnowledgeBase).where(
-                            KnowledgeBase.id == seed.kb_id,
+                            KnowledgeBase.id == kb_id,
                             KnowledgeBase.owner_user_id == owner_user_id,
                         )
                     )
                 if kb is None:
                     raise PermissionError(
-                        f"KB {seed.kb_id} is unavailable to user {owner_user_id}"
+                        f"KB {kb_id} is unavailable to user {owner_user_id}"
                     )
 
-                collection_name = kb.active_collection or f"kb_{seed.kb_id}_v1"
+                collection_name = kb.active_collection or f"kb_{kb_id}_v1"
                 collection = client.get_collection(name=collection_name)
+                wanted_indices = sorted(
+                    {
+                        index + delta
+                        for _, index in grouped_seeds
+                        for delta in (-1, 0, 1)
+                    }
+                )
                 result = collection.get(
-                    where={"doc_id": seed.doc_id},
+                    where={
+                        "$and": [
+                            {"doc_id": {"$eq": doc_id}},
+                            {"chunk_index": {"$in": wanted_indices}},
+                        ]
+                    },
                     include=["documents", "metadatas", "embeddings"],
                 )
-                window = _neighbor_window(
-                    result,
-                    seed=seed,
-                    seed_index=seed_index,
-                    query_embedding=query_embedding,
-                    kb_name=kb.name,
-                    core_by_key=core_by_key,
-                )
-                if not window:
-                    raise ValueError(f"no adjacent window found for chunk {seed.chunk_id!r}")
-                expanded.extend(window)
+                if not _flat_result_values(result, "ids"):
+                    result = collection.get(
+                        where={"doc_id": doc_id},
+                        include=["documents", "metadatas", "embeddings"],
+                    )
+                for seed, seed_index in grouped_seeds:
+                    window = _neighbor_window(
+                        result,
+                        seed=seed,
+                        seed_index=seed_index,
+                        query_embedding=query_embedding,
+                        kb_name=kb.name,
+                        core_by_key=core_by_key,
+                    )
+                    if not window:
+                        raise ValueError(
+                            f"no adjacent window found for chunk {seed.chunk_id!r}"
+                        )
+                    expanded_windows.extend(window)
 
-            expanded.extend(chunks)
-            return pack_context(expanded, max_chunks=max_chunks, max_tokens=max_tokens)
+            neighbor_candidates = [
+                chunk
+                for chunk in expanded_windows
+                if (chunk.kb_id, chunk.chunk_id) not in core_by_key
+            ]
+            selected = pack_context(
+                [*chunks, *neighbor_candidates],
+                max_chunks=max_chunks,
+                max_tokens=max_tokens,
+            )
+            selected_ids = {chunk.chunk_id for chunk in selected}
+            ordered: list[RetrievedChunk] = []
+            emitted: set[str] = set()
+            for chunk in [*expanded_windows, *chunks]:
+                if chunk.chunk_id in selected_ids and chunk.chunk_id not in emitted:
+                    ordered.append(chunk)
+                    emitted.add(chunk.chunk_id)
+            return ordered
         except Exception as exc:
             logger.warning("Adjacent context expansion failed; using core chunks: %s", exc)
             return pack_context(chunks, max_chunks=max_chunks, max_tokens=max_tokens)

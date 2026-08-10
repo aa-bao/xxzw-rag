@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import uuid
+from typing import Any
 
 import pytest
 from sqlalchemy import select
@@ -264,9 +265,9 @@ async def test_expand_context_only_expands_first_two_global_seeds(
             "10:4:right",
             "20:6:left",
             "20:7:seed",
-            "20:8:right",
             "30:1:core",
             "40:1:core",
+            "50:1:core",
         ]
         assert len({chunk.chunk_id for chunk in expanded}) == len(expanded)
         left = next(chunk for chunk in expanded if chunk.chunk_id == "10:2:left")
@@ -346,6 +347,133 @@ async def test_expand_context_orders_hard_split_fragments_by_offset(
         await engine.dispose()
 
 
+async def test_expand_context_reserves_budget_for_core_before_fragmented_neighbor(
+    migrated_mysql_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        owner_id, kb_id = await _seed_kb(factory, "budget", "kb_budget_v1")
+        left_ids = [f"10:2:left#{offset}" for offset in range(0, 4000, 500)]
+        ids = [*left_ids, "10:3:seed", "10:7:seed"]
+        collection = _ExpandableChromaCollection(
+            {
+                10: {
+                    "ids": ids,
+                    "documents": ids,
+                    "metadatas": [
+                        {"doc_id": 10, "title": "doc", "chunk_index": index}
+                        for index in [*([2] * len(left_ids)), 3, 7]
+                    ],
+                    "embeddings": [[1.0, 0.0] for _ in ids],
+                }
+            }
+        )
+        module = ChromaRetrieval(factory, relay=_RecordingRelay([1.0, 0.0]))
+        monkeypatch.setattr(module, "_get_client", lambda: _SingleCollectionClient(collection))
+        cores = [
+            _core("10:3:seed", 10, 3, kb_id, 0.9),
+            _core("10:7:seed", 10, 7, kb_id, 0.8),
+        ]
+
+        expanded = await module.expand_context("question", owner_id, cores)
+
+        assert len(expanded) == 8
+        assert {core.chunk_id for core in cores}.issubset(
+            {chunk.chunk_id for chunk in expanded}
+        )
+        assert all(
+            next(
+                chunk for chunk in expanded if chunk.chunk_id == core.chunk_id
+            ).is_neighbor
+            is False
+            for core in cores
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_expand_context_groups_same_document_seeds_in_one_filtered_get(
+    migrated_mysql_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        owner_id, kb_id = await _seed_kb(factory, "grouped", "kb_grouped_v1")
+        result = _window_result(10, [2, 3, 4, 6, 7, 8])
+        collection = _FilteredExpandableCollection(result, result)
+        module = ChromaRetrieval(factory, relay=_RecordingRelay([1.0, 0.0]))
+        monkeypatch.setattr(module, "_get_client", lambda: _SingleCollectionClient(collection))
+        cores = [
+            _core("10:3:chunk", 10, 3, kb_id, 0.9),
+            _core("10:7:chunk", 10, 7, kb_id, 0.8),
+        ]
+
+        expanded = await module.expand_context("question", owner_id, cores)
+
+        assert collection.where_calls == [
+            {
+                "$and": [
+                    {"doc_id": {"$eq": 10}},
+                    {"chunk_index": {"$in": [2, 3, 4, 6, 7, 8]}},
+                ]
+            }
+        ]
+        assert {core.chunk_id for core in cores}.issubset(
+            {chunk.chunk_id for chunk in expanded}
+        )
+    finally:
+        await engine.dispose()
+
+
+async def test_expand_context_falls_back_once_when_old_index_fast_read_is_empty(
+    migrated_mysql_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        owner_id, kb_id = await _seed_kb(factory, "legacy", "kb_legacy_v1")
+        legacy_result = {
+            "ids": ["10:2:left", "10:3:seed", "10:4:right"],
+            "documents": ["left", "seed", "right"],
+            "metadatas": [
+                {"doc_id": 10, "title": "legacy"},
+                {"doc_id": 10, "title": "legacy"},
+                {"doc_id": 10, "title": "legacy"},
+            ],
+            "embeddings": [[1.0, 0.0], [1.0, 0.0], [1.0, 0.0]],
+        }
+        collection = _FilteredExpandableCollection(
+            {"ids": [], "documents": [], "metadatas": [], "embeddings": []},
+            legacy_result,
+        )
+        module = ChromaRetrieval(factory, relay=_RecordingRelay([1.0, 0.0]))
+        monkeypatch.setattr(module, "_get_client", lambda: _SingleCollectionClient(collection))
+        core = _core("10:3:seed", 10, None, kb_id, 0.9)
+
+        expanded = await module.expand_context("question", owner_id, [core], seed_count=1)
+
+        assert collection.where_calls == [
+            {
+                "$and": [
+                    {"doc_id": {"$eq": 10}},
+                    {"chunk_index": {"$in": [2, 3, 4]}},
+                ]
+            },
+            {"doc_id": 10},
+        ]
+        assert [chunk.chunk_id for chunk in expanded] == [
+            "10:2:left",
+            "10:3:seed",
+            "10:4:right",
+        ]
+    finally:
+        await engine.dispose()
+
+
 class _FakeChromaClient:
     """Minimal chromadb client double: records get_or_create, serves query results."""
 
@@ -394,11 +522,35 @@ class _ExpandableChromaCollection:
         self._results_by_doc = results_by_doc
         self.get_calls: list[int] = []
 
-    def get(self, *, where: dict[str, int], include: list[str]) -> dict[str, object]:
+    def get(self, *, where: dict[str, Any], include: list[str]) -> dict[str, object]:
         assert include == ["documents", "metadatas", "embeddings"]
-        doc_id = where["doc_id"]
+        if "$and" in where:
+            doc_id = where["$and"][0]["doc_id"]["$eq"]
+        else:
+            doc_id = where["doc_id"]
         self.get_calls.append(doc_id)
         return self._results_by_doc[doc_id]
+
+
+class _FilteredExpandableCollection:
+    def __init__(
+        self,
+        filtered_result: dict[str, object],
+        fallback_result: dict[str, object],
+    ) -> None:
+        self._filtered_result = filtered_result
+        self._fallback_result = fallback_result
+        self.where_calls: list[dict[str, object]] = []
+
+    def get(
+        self,
+        *,
+        where: dict[str, object],
+        include: list[str],
+    ) -> dict[str, object]:
+        assert include == ["documents", "metadatas", "embeddings"]
+        self.where_calls.append(where)
+        return self._filtered_result if "$and" in where else self._fallback_result
 
 
 class _RecordingRelay:
@@ -430,6 +582,19 @@ def _core(
         rank_score=rank_score,
         chunk_index=chunk_index,
     )
+
+
+def _window_result(doc_id: int, indices: list[int]) -> dict[str, object]:
+    ids = [f"{doc_id}:{index}:chunk" for index in indices]
+    return {
+        "ids": ids,
+        "documents": ids,
+        "metadatas": [
+            {"doc_id": doc_id, "title": "doc", "chunk_index": index}
+            for index in indices
+        ],
+        "embeddings": [[1.0, 0.0] for _ in indices],
+    }
 
 
 async def _seed_kb(factory, name: str, collection: str, *, owner_id: int | None = None) -> tuple[int, int]:
