@@ -1,10 +1,43 @@
 import { api } from './client'
 
-/** 文档解析状态：pending 排队 / running 解析中 / done 完成 / failed 失败 / deleting 删除中 */
-export type DocStatus = 'pending' | 'running' | 'done' | 'failed' | 'deleting'
+/**
+ * 文档状态（镜像后端 rag_document.status 完整枚举）。
+ * 结构化 JSON 入库流程：awaiting_mapping → previewing → queued → mapping →
+ * chunking → embedding → indexing_lexical → indexing_dense → activating → done。
+ */
+export type DocStatus =
+  | 'pending'
+  | 'running'
+  | 'uploaded'
+  | 'profiling'
+  | 'awaiting_mapping'
+  | 'previewing'
+  | 'queued'
+  | 'mapping'
+  | 'chunking'
+  | 'embedding'
+  | 'indexing_lexical'
+  | 'indexing_dense'
+  | 'activating'
+  | 'done'
+  | 'done_with_warnings'
+  | 'failed'
+  | 'deleting'
 
-/** 解析阶段（job 粒度）：parsing 解析文本 / chunking 分块 / embedding 向量化 / indexing 写入索引 */
-export type DocStage = 'parsing' | 'chunking' | 'embedding' | 'indexing'
+/** 解析阶段（job 粒度，镜像后端 DocumentJob.stage 枚举） */
+export type DocStage =
+  | 'parsing'
+  | 'indexing'
+  | 'profiling'
+  | 'awaiting_mapping'
+  | 'previewing'
+  | 'queued'
+  | 'mapping'
+  | 'chunking'
+  | 'embedding'
+  | 'indexing_lexical'
+  | 'indexing_dense'
+  | 'activating'
 
 export interface DocInfo {
   id: number
@@ -33,28 +66,58 @@ export interface DocStatusDetail {
   error_message: string | null
 }
 
+export interface DocListEntry extends DocInfo {
+  /** 结构化映射是否已确认（仅 awaiting_mapping/failed 结构化文档可能为 true） */
+  mapping_ready: boolean
+}
+
 /** 文档状态到前端展示态的归一化：兼容历史枚举（processing/completed/success/error） */
-export type DocDisplayStatus = 'pending' | 'running' | 'done' | 'failed' | 'deleting'
+export type DocDisplayStatus =
+  | 'pending'
+  | 'running'
+  | 'awaiting_mapping'
+  | 'done'
+  | 'done_with_warnings'
+  | 'failed'
+  | 'deleting'
+
+const DISPLAY_MAP: Record<string, DocDisplayStatus> = {
+  pending: 'pending',
+  queued: 'pending',
+  running: 'running',
+  processing: 'running',
+  uploaded: 'awaiting_mapping',
+  profiling: 'running',
+  awaiting_mapping: 'awaiting_mapping',
+  previewing: 'running',
+  mapping: 'running',
+  chunking: 'running',
+  embedding: 'running',
+  indexing_lexical: 'running',
+  indexing_dense: 'running',
+  activating: 'running',
+  done: 'done',
+  completed: 'done',
+  success: 'done',
+  done_with_warnings: 'done_with_warnings',
+  failed: 'failed',
+  error: 'failed',
+  deleting: 'deleting',
+}
+
+/** 非终态（需要继续轮询） */
+export function isNonterminal(status: DocDisplayStatus | string): boolean {
+  const s = normalizeDocStatus(status)
+  return s === 'pending' || s === 'running' || s === 'awaiting_mapping'
+}
 
 export function normalizeDocStatus(status: string | null | undefined): DocDisplayStatus {
   const key = (status ?? 'pending').toLowerCase()
-  const map: Record<string, DocDisplayStatus> = {
-    pending: 'pending',
-    queued: 'pending',
-    running: 'running',
-    processing: 'running',
-    done: 'done',
-    completed: 'done',
-    success: 'done',
-    failed: 'failed',
-    error: 'failed',
-    deleting: 'deleting',
-  }
-  return map[key] ?? 'pending'
+  return DISPLAY_MAP[key] ?? 'pending'
 }
 
-export async function listDocs(kbId: number): Promise<DocInfo[]> {
-  const resp = await api.get<DocInfo[]>(`/kb/${kbId}/docs`)
+export async function listDocs(kbId: number): Promise<DocListEntry[]> {
+  const resp = await api.get<DocListEntry[]>(`/kb/${kbId}/docs`)
   return resp.data
 }
 
@@ -91,4 +154,9 @@ export interface DocRaw {
 export async function getDocRaw(kbId: number, docId: number): Promise<DocRaw> {
   const resp = await api.get<DocRaw>(`/kb/${kbId}/docs/${docId}/raw`)
   return resp.data
+}
+
+/** 逐记录映射错误下载链接（浏览器直接下载；仅 mapping_ready 结构化文档存在） */
+export function mappingErrorsUrl(docId: number): string {
+  return `/api/docs/${docId}/mapping-errors/download`
 }

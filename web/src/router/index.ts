@@ -42,6 +42,12 @@ const router = createRouter({
           meta: { title: '用户管理', roles: ['account_admin'] },
         },
         {
+          path: 'settings/mapping-templates',
+          name: 'mapping-templates',
+          component: () => import('../views/MappingTemplatesView.vue'),
+          meta: { title: '映射模板', roles: ['account_admin'] },
+        },
+        {
           path: 'kb/:id',
           component: () => import('../views/KbDetailLayout.vue'),
           meta: { requiresAuth: true, roles: ['account_admin'] },

@@ -5,6 +5,18 @@ import KbDocsView from '../../views/KbDocsView.vue'
 import JsonMappingWizard from './JsonMappingWizard.vue'
 import UploadDialog from '../UploadDialog.vue'
 
+vi.mock('../../api/structured', () => ({
+  profileJson: vi.fn(),
+  previewJson: vi.fn(),
+  listMappingTemplates: vi.fn().mockResolvedValue([]),
+  createMappingTemplateVersion: vi.fn(),
+  startJsonIngest: vi.fn(),
+  checkMappingCompatibility: vi.fn(),
+}))
+
+const { profileJson } = await import('../../api/structured')
+const profileJsonMock = vi.mocked(profileJson)
+
 vi.mock('../../api/docs', () => ({
   uploadDoc: vi.fn().mockResolvedValue({ doc_id: 11, job_id: 1, status: 'queued' }),
   listDocs: vi.fn().mockResolvedValue([]),
@@ -136,6 +148,10 @@ describe('KbDocsView JSON routing', () => {
 })
 
 describe('JsonMappingWizard shell', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+
   it('renders the six-step header and upload step initially', async () => {
     await mountDialog(JsonMappingWizard, { visible: true, kbId: 5 })
 
@@ -163,5 +179,31 @@ describe('JsonMappingWizard shell', () => {
     const primary2 = buttonsByText(document.body, '开始探查')
     expect(primary2).toHaveLength(1)
     expect(primary2[0].disabled).toBe(false)
+  })
+
+  it('continue-configuration mode profiles the preset doc directly without re-upload', async () => {
+    profileJsonMock.mockResolvedValue({
+      source_format: 'json',
+      doc_id: 42,
+      candidates: [],
+      fingerprint: 'fp',
+      total_records_estimate: 0,
+      sampled_records: 0,
+      warnings: [],
+    })
+    await mountDialog(JsonMappingWizard, { visible: true, kbId: 5, docId: 42 })
+
+    // 继续配置模式：无需选择文件，「开始探查」直接可用
+    const primary = buttonsByText(document.body, '开始探查')
+    expect(primary).toHaveLength(1)
+    expect(primary[0].disabled).toBe(false)
+
+    await primary[0].click()
+    await flushPromises()
+
+    // 直接对预置 doc 探查，不再走上传
+    expect(profileJsonMock).toHaveBeenCalledWith(5, 42)
+    // 进入结构检测步骤（展示候选路径元信息）
+    expect(document.body.textContent).toContain('检测到 0 个候选记录路径')
   })
 })

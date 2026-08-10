@@ -66,6 +66,8 @@ export function useJsonMappingWizard(kbId: number) {
   const lastError = ref<string | null>(null)
   /** 最近一次结构探查结果：relations 步骤返回 fields 时需要 */
   let profileCache: SourceProfile | null = null
+  /** 「继续配置」模式：预置的已上传文档（upload 步骤直接探查，无需再选文件） */
+  let resumeDocId: number | null = null
   /** 当前 preview 行对应的映射哈希：映射变更后未重新预览则确认失效 */
   const previewHash = ref<string | null>(null)
 
@@ -93,17 +95,22 @@ export function useJsonMappingWizard(kbId: number) {
 
   function setFile(file: File | null) {
     if (busy.value !== null) return
+    resumeDocId = null
     state.value = { step: 'upload', file }
   }
 
-  /** 1→2：上传完成后探查结构 */
+  /** 1→2：探查结构。支持从文档列表「继续配置」进入（file 为 null 但 docId 已存在） */
   async function profile(docId: number): Promise<SourceProfile> {
     const s = state.value
-    if (s.step !== 'upload' || s.file === null) {
+    if (s.step !== 'upload') {
+      throw new Error(`当前步骤（${s.step}）不能开始结构探查`)
+    }
+    if (s.file === null && resumeDocId !== docId) {
       throw new Error('请先选择要上传的 JSON 文件')
     }
     const result = await run('profile', () => api.profileJson(kbId, docId))
     profileCache = result
+    resumeDocId = null
     state.value = { step: 'structure', docId, profile: result }
     return result
   }
@@ -219,8 +226,16 @@ export function useJsonMappingWizard(kbId: number) {
     ingested.value = { docId: result.doc_id, jobId: result.job_id }
     profileCache = null
     previewHash.value = null
+    resumeDocId = null
     // 重置 transient 数据，回到初始 upload 步骤
     state.value = { step: 'upload', file: null }
+  }
+
+  /** 预置要配置的文档：进入 upload 步骤并允许直接探查已上传文档 */
+  function setDocForResume(docId: number): void {
+    if (busy.value !== null) return
+    state.value = { step: 'upload', file: null }
+    resumeDocId = docId
   }
 
   return {
@@ -232,6 +247,7 @@ export function useJsonMappingWizard(kbId: number) {
     stepNumber: stepNumberValue,
     api,
     setFile,
+    setDocForResume,
     profile,
     selectCandidate,
     next,

@@ -125,6 +125,8 @@ import type { Compatibility, MappingTemplateSummary } from '../../types/structur
 const props = defineProps<{
   visible: boolean
   kbId: number
+  /** 继续配置模式：预置的已上传文档 ID（awaiting_mapping/failed 文档重新进入向导） */
+  docId?: number | null
 }>()
 
 const emit = defineEmits<{
@@ -152,6 +154,12 @@ const compatibility = ref<Compatibility | null>(null)
 
 const stepNumber = computed(() => hook.stepNumber.value)
 const hasFile = computed(() => state.value.step === 'upload' && state.value.file !== null)
+/** 继续配置模式：外部传入的已上传文档 ID */
+const resumeDocId = computed(() => props.docId ?? null)
+/** 继续配置模式：未选择文件但有预置文档，可直接开始探查 */
+const canResumeProfile = computed(
+  () => state.value.step === 'upload' && state.value.file === null && resumeDocId.value !== null,
+)
 const confirmWarningCount = computed(() =>
   state.value.step === 'preview' || state.value.step === 'confirm'
     ? state.value.rows.reduce((n, r) => n + r.warnings.length, 0)
@@ -161,7 +169,7 @@ const confirmWarningCount = computed(() =>
 const primaryLabel = computed(() => {
   switch (state.value.step) {
     case 'upload':
-      return hasFile.value ? '开始探查' : '下一步'
+      return hasFile.value || canResumeProfile.value ? '开始探查' : '下一步'
     case 'structure':
       return '使用所选路径'
     case 'fields':
@@ -180,7 +188,7 @@ const primaryLabel = computed(() => {
 const primaryDisabled = computed(() => {
   if (busy.value !== null) return true
   const s = state.value
-  if (s.step === 'upload') return !hasFile.value
+  if (s.step === 'upload') return !hasFile.value && !canResumeProfile.value
   if (s.step === 'structure') return structureStepRef.value?.selectedPath === null
   if (s.step === 'fields') return fieldsStepRef.value?.canContinue !== true
   if (s.step === 'confirm') return !confirmStepRef.value?.checked
@@ -213,6 +221,15 @@ async function handlePrimary() {
   const s = state.value
   if (busy.value !== null) return
   if (s.step === 'upload') {
+    // 继续配置模式：跳过上传直接探查已上传文档
+    if (s.file === null && resumeDocId.value !== null) {
+      try {
+        await hook.profile(resumeDocId.value)
+      } catch (err) {
+        errorText.value = getErrorMessage(err)
+      }
+      return
+    }
     if (s.file === null) return
     const docId = await uploadFile(s.file)
     if (docId === null) return
@@ -423,11 +440,15 @@ watch(
   (v) => {
     if (v) {
       hook.setFile(null)
+      if (resumeDocId.value !== null) {
+        hook.setDocForResume(resumeDocId.value)
+      }
       errorText.value = ''
       fieldEditsExist.value = false
       resetTransient()
     }
   },
+  { immediate: true },
 )
 </script>
 
