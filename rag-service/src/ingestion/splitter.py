@@ -14,17 +14,20 @@ _FAQ_MARKER_RE = re.compile(
     r"FAQ(?=$|\s|\d+\s*[、.．])",
     re.IGNORECASE | re.MULTILINE,
 )
-_FAQ_CANDIDATE_RE = re.compile(r"(?<!\d)\d+\s*[、.．]")
+_FAQ_CANDIDATE_RE = re.compile(
+    r"(?:^|(?<=[\n。！？!?；;]))[ \t]*\d+\s*[、.．]",
+    re.MULTILINE,
+)
 _FAQ_ITEM_RE = re.compile(
     r"(?<!\d)\d+\s*[、.．]\s*.*?[？?]\s*答[：:]",
     re.DOTALL,
 )
 _FAQ_SECTION_RE = re.compile(
-    r"(?:^|(?<=[。！？!?]))[ \t]*(?:"
+    r"^[ \t]*(?:"
     r"#{1,6}[ \t]+\S[^\r\n]*|"
-    r"第[一二三四五六七八九十百\d]+[章节篇部][^\r\n]*|"
-    r"[一二三四五六七八九十百]+、[^\r\n]+"
-    r")",
+    r"第[一二三四五六七八九十百\d]+[章节篇][^\r\n]*|"
+    r"[一二三四五六七八九十百]+、[ \t]*(?:附则|附录|结语)[ \t]*"
+    r")(?=\r?$|\n)",
     re.MULTILINE,
 )
 
@@ -158,7 +161,7 @@ def _extract_faq_units(text: str) -> list[str]:
     item_starts: list[re.Match[str]] = []
     for index, candidate in enumerate(candidates):
         end = candidates[index + 1].start() if index + 1 < len(candidates) else len(faq_region)
-        if _FAQ_ITEM_RE.match(faq_region[candidate.start() : end]):
+        if _FAQ_ITEM_RE.match(faq_region[candidate.start() : end].lstrip()):
             item_starts.append(candidate)
     if not item_starts:
         return _to_units(text)

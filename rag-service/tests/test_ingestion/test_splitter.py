@@ -181,3 +181,29 @@ def test_faq_stops_before_following_numbered_section() -> None:
     faq_chunk = next(value for value in contents if value.startswith("1、如何处理？"))
     assert "附则" not in faq_chunk
     assert any("十、附则" in value and "附则正文。" in value for value in contents)
+
+
+def test_numbered_options_inside_question_stay_in_the_faq_item() -> None:
+    question = "1、支持哪些版本（1、基础版，2、专业版）？"
+    chunks = split_text(1, f"# FAQ{question}答：都支持。", chunk_size=64, overlap=0)
+    assert any(chunk["content"] == f"{question}答：都支持。" for chunk in chunks)
+
+
+def test_chinese_numbered_answer_steps_stay_before_next_faq_item() -> None:
+    text = (
+        "# FAQ"
+        "1、如何操作？答：步骤如下：\n一、先准备。\n二、再提交。\n"
+        "2、如何撤销？答：联系管理员。"
+    )
+    chunks = split_text(1, text, chunk_size=64, overlap=0)
+    contents = [chunk["content"] for chunk in chunks]
+    first = next(value for value in contents if value.startswith("1、如何操作？"))
+    second = next(value for value in contents if value.startswith("2、如何撤销？"))
+    assert "一、先准备。\n二、再提交。" in first
+    assert "如何撤销" not in first
+    assert second == "2、如何撤销？答：联系管理员。"
+
+
+def test_faq_item_allows_whitespace_after_candidate_boundary() -> None:
+    chunks = split_text(1, "# FAQ\n  1、如何处理？答：按流程处理。", chunk_size=64, overlap=0)
+    assert any(chunk["content"] == "1、如何处理？答：按流程处理。" for chunk in chunks)
