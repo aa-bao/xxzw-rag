@@ -107,11 +107,11 @@ class QueryEngine:
         db.add(query_log)
 
         # Retrieve：对每个知识库分别检索，合并后按 score 降序整体截断 top_k
-        sources = await self._retrieval.retrieve_multi(
+        core_sources = await self._retrieval.retrieve_multi(
             question, user_id, kb_ids, top_k, similarity_threshold
         )
 
-        if not sources:
+        if not core_sources:
             assistant_msg.content = self._empty_response
             assistant_msg.status = "completed"
             assistant_msg.tokens_used = len(self._empty_response)
@@ -120,6 +120,10 @@ class QueryEngine:
             yield _sse_event(SSE_CHUNK, json.dumps({"content": self._empty_response}))
             yield _sse_event(SSE_DONE, json.dumps({"completed": True}))
             return
+
+        sources = await self._retrieval.expand_context(
+            question, user_id, core_sources
+        )
 
         messages = build_messages(question, history_roles, sources)
         content_emitted = False
@@ -180,6 +184,7 @@ class QueryEngine:
                             "page": s.page,
                             "kb_id": s.kb_id,
                             "kb_name": s.kb_name,
+                            "is_neighbor": s.is_neighbor,
                         }
                         for s in sources
                     ]

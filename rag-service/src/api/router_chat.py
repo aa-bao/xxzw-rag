@@ -206,6 +206,7 @@ async def get_messages(
                         "snippet": r.snippet,
                         "score": float(r.score) if r.score is not None else None,
                         "page": r.page,
+                        "is_neighbor": False,
                     }
                     for r in refs_by_message.get(m.id, [])
                 ],

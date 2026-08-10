@@ -374,6 +374,7 @@ async def test_messages_return_references_and_leave_streaming(
                     "snippet": "snippet",
                     "score": 0.91,
                     "page": 2,
+                    "is_neighbor": False,
                 }
             ]
 
@@ -444,6 +445,8 @@ async def test_query_returns_empty_response_when_all_chunks_below_threshold(
             assert "event: references" not in body
 
             assert retrieval.last_threshold == 0.7
+            assert retrieval.last_expand_query == ""
+            assert retrieval.last_expand_core_ids == []
 
         # 空检索路径也持久化了 query log
         async with factory() as session:

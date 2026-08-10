@@ -88,3 +88,125 @@ async def test_run_retrieves_from_all_kbs_and_merges(
             assert {r.kb_name for r in refs} == {"kb-a", "kb-b"}
     finally:
         await engine.dispose()
+
+
+async def test_run_expands_globally_truncated_cores_for_prompt_references_and_log(
+    migrated_mysql_url: str,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            user = User(
+                username=f"u-{uuid.uuid4().hex[:8]}",
+                password_hash="h",
+                role="user",
+                status="active",
+            )
+            session.add(user)
+            await session.flush()
+            kb_a = KnowledgeBase(
+                owner_user_id=user.id,
+                name="kb-a",
+                embedding_model="t",
+                embedding_dimension=128,
+                active_collection="a",
+            )
+            kb_b = KnowledgeBase(
+                owner_user_id=user.id,
+                name="kb-b",
+                embedding_model="t",
+                embedding_dimension=128,
+                active_collection="b",
+            )
+            session.add_all([kb_a, kb_b])
+            await session.flush()
+            conversation = Conversation(id=uuid.uuid4().hex, owner_user_id=user.id)
+            session.add(conversation)
+            session.add_all(
+                [
+                    ConversationKb(
+                        conversation_id=conversation.id,
+                        kb_id=kb_a.id,
+                        owner_user_id=user.id,
+                    ),
+                    ConversationKb(
+                        conversation_id=conversation.id,
+                        kb_id=kb_b.id,
+                        owner_user_id=user.id,
+                    ),
+                ]
+            )
+            await session.commit()
+            conversation_id = conversation.id
+            user_id = user.id
+            kb_ids = [kb_a.id, kb_b.id]
+
+        cores = [
+            RetrievedChunk("a1", "core a1", 1, "doc a", None, 0.95, kb_id=kb_ids[0]),
+            RetrievedChunk("a2", "core a2", 1, "doc a", None, 0.70, kb_id=kb_ids[0]),
+            RetrievedChunk("a3", "core a3", 1, "doc a", None, 0.50, kb_id=kb_ids[0]),
+            RetrievedChunk("b1", "core b1", 2, "doc b", None, 0.90, kb_id=kb_ids[1]),
+            RetrievedChunk("b2", "core b2", 2, "doc b", None, 0.80, kb_id=kb_ids[1]),
+        ]
+        expanded = [
+            cores[0],
+            RetrievedChunk(
+                "a0", "neighbor a0", 1, "doc a", None, 0.40,
+                kb_id=kb_ids[0], is_neighbor=True,
+            ),
+            cores[3],
+            RetrievedChunk(
+                "b0", "neighbor b0", 2, "doc b", None, 0.35,
+                kb_id=kb_ids[1], is_neighbor=True,
+            ),
+            cores[4],
+        ]
+        retrieval = FakeRetrieval(cores, expanded_chunks=expanded)
+        chat = FakeChatClient()
+        query_engine = QueryEngine(retrieval, chat)
+
+        async with factory() as session:
+            events = [
+                event
+                async for event in query_engine.run(
+                    session,
+                    conversation_id=conversation_id,
+                    question="expanded question",
+                    user_id=user_id,
+                    kb_ids=kb_ids,
+                    top_k=3,
+                )
+            ]
+
+        assert retrieval.last_kb_ids == kb_ids
+        assert retrieval.last_expand_query == "expanded question"
+        assert retrieval.last_expand_owner == user_id
+        assert retrieval.last_expand_core_ids == ["a1", "b1", "b2"]
+        prompt = chat.last_messages[-1]["content"]
+        assert all(chunk.content in prompt for chunk in expanded)
+        assert "core a2" not in prompt
+
+        references_event = next(event for event in events if "event: references" in event)
+        items = json.loads(references_event.split("\ndata: ", 1)[1])["items"]
+        assert [item["chunk_id"] for item in items] == [chunk.chunk_id for chunk in expanded]
+        assert [item["is_neighbor"] for item in items] == [False, True, False, True, False]
+
+        async with factory() as session:
+            log = await session.scalar(
+                select(QueryLog).where(QueryLog.conversation_id == conversation_id)
+            )
+            assert log.chunks_count == len(expanded)
+            references = (
+                await session.scalars(
+                    select(Reference)
+                    .join(Message, Reference.message_id == Message.id)
+                    .where(Message.conversation_id == conversation_id)
+                    .order_by(Reference.id)
+                )
+            ).all()
+            assert [reference.chunk_id for reference in references] == [
+                chunk.chunk_id for chunk in expanded
+            ]
+    finally:
+        await engine.dispose()

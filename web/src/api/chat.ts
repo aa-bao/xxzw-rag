@@ -20,6 +20,7 @@ export interface ReferenceInfo {
   page: number | null
   kb_id?: number | null
   kb_name?: string | null
+  is_neighbor?: boolean
 }
 
 export interface ChatMessageInfo {
