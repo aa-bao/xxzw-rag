@@ -8,10 +8,22 @@ from typing import Any
 _PARAGRAPH_RE = re.compile(r"\n\s*\n")
 _LINE_RE = re.compile(r"\n")
 _SENTENCE_RE = re.compile(r"(?<=[。！？；!?；…])")
-_FAQ_MARKER_RE = re.compile(r"FAQ", re.IGNORECASE)
+_FAQ_MARKER_RE = re.compile(
+    r"(?:^|(?<=[。！？!?]))[ \t]*(?:#{1,6}[ \t]*)?"
+    r"(?:[一二三四五六七八九十百]+、[ \t]*)?FAQ(?=$|[\s\d])",
+    re.IGNORECASE | re.MULTILINE,
+)
 _FAQ_ITEM_RE = re.compile(
     r"(?<!\d)\d+\s*[、.．]\s*.*?[？?]\s*答[：:]",
     re.DOTALL,
+)
+_FAQ_SECTION_RE = re.compile(
+    r"(?:^|(?<=[。！？!?]))[ \t]*(?:"
+    r"#{1,6}[ \t]+\S[^\r\n]*|"
+    r"第[一二三四五六七八九十百\d]+[章节篇部][^\r\n]*|"
+    r"[一二三四五六七八九十百]+、[^\r\n]+"
+    r")",
+    re.MULTILINE,
 )
 
 # 目标块大小允许的浮动比例：凑边界时允许略超
@@ -136,14 +148,22 @@ def _extract_faq_units(text: str) -> list[str]:
     if marker is None:
         return _to_units(text)
 
-    units = _to_units(text[: marker.start()])
     faq_tail = text[marker.end() :]
-    matches = list(_FAQ_ITEM_RE.finditer(faq_tail))
+    section = _FAQ_SECTION_RE.search(faq_tail)
+    faq_end = section.start() if section is not None else len(faq_tail)
+    faq_region = faq_tail[:faq_end]
+    matches = list(_FAQ_ITEM_RE.finditer(faq_region))
+    if not matches:
+        return _to_units(text)
+
+    units = _to_units(text[: marker.start()])
+    units.extend(_to_units(faq_region[: matches[0].start()]))
     for index, match in enumerate(matches):
-        end = matches[index + 1].start() if index + 1 < len(matches) else len(faq_tail)
-        item = faq_tail[match.start() : end].strip()
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(faq_region)
+        item = faq_region[match.start() : end].strip()
         if item:
             units.append(item)
+    units.extend(_to_units(faq_tail[faq_end:]))
     return units
 
 

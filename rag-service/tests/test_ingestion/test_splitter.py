@@ -120,3 +120,32 @@ def test_long_faq_repeats_question_prefix() -> None:
     assert len(faq_chunks) >= 2
     assert all(value.startswith(question) for value in faq_chunks)
     assert all(len(value) <= 500 for value in faq_chunks)
+
+
+def test_faq_word_in_ordinary_sentence_does_not_enable_qa_units() -> None:
+    text = "正文提到FAQ功能。1、这是什么？答：普通说明。"
+    chunks = split_text(1, text, chunk_size=512, overlap=0)
+    assert "".join(chunk["content"] for chunk in chunks) == text
+
+
+def test_text_between_faq_marker_and_first_item_is_preserved() -> None:
+    text = "# FAQ\n以下内容来自客服整理。\n1、如何处理？答：按流程处理。"
+    chunks = split_text(1, text, chunk_size=512, overlap=0)
+    contents = [chunk["content"] for chunk in chunks]
+    assert any("以下内容来自客服整理。" in value for value in contents)
+    assert any("1、如何处理？答：按流程处理。" in value for value in contents)
+
+
+def test_faq_marker_without_valid_item_falls_back_to_normal_splitting() -> None:
+    text = "# FAQ\n这是说明，没有编号问答。"
+    chunks = split_text(1, text, chunk_size=512, overlap=0)
+    assert "".join(chunk["content"] for chunk in chunks) == "# FAQ这是说明，没有编号问答。"
+
+
+def test_faq_stops_before_following_markdown_section() -> None:
+    text = "# FAQ\n1、如何处理？答：按流程处理。\n# 后续章节\n后续正文。"
+    chunks = split_text(1, text, chunk_size=512, overlap=0)
+    contents = [chunk["content"] for chunk in chunks]
+    faq_chunk = next(value for value in contents if value.startswith("1、如何处理？"))
+    assert "后续章节" not in faq_chunk
+    assert any("# 后续章节" in value and "后续正文。" in value for value in contents)
