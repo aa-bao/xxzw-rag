@@ -20,6 +20,16 @@ EXPECTED_TABLES = {
     "rag_message",
     "rag_reference",
     "rag_query_log",
+    "rag_mapping_template",
+    "rag_mapping_template_version",
+    "rag_document_mapping",
+    "rag_ingest_run",
+}
+
+EXPECTED_DOCUMENT_COLUMNS = {
+    "active_ingest_run_id",
+    "processed_path",
+    "mapping_errors_path",
 }
 
 
@@ -50,9 +60,13 @@ async def test_upgrade_head_creates_slice_schema(mysql_url: str) -> None:
     engine = create_async_engine(mysql_url)
     try:
         async with engine.connect() as connection:
-            tables, document_fks, conversation_kb_fks = await connection.run_sync(
+            tables, document_columns, document_fks, conversation_kb_fks = await connection.run_sync(
                 lambda sync_connection: (
                     set(inspect(sync_connection).get_table_names()),
+                    {
+                        column["name"]
+                        for column in inspect(sync_connection).get_columns("rag_document")
+                    },
                     inspect(sync_connection).get_foreign_keys("rag_document"),
                     inspect(sync_connection).get_foreign_keys("rag_conversation_kb"),
                 )
@@ -61,6 +75,7 @@ async def test_upgrade_head_creates_slice_schema(mysql_url: str) -> None:
         await engine.dispose()
 
     assert EXPECTED_TABLES <= tables
+    assert EXPECTED_DOCUMENT_COLUMNS <= document_columns
     assert _has_composite_fk(
         document_fks,
         ("kb_id", "owner_user_id"),

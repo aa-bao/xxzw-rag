@@ -136,7 +136,9 @@ class Document(Base):
         Index("idx_document_kb_status", "kb_id", "status"),
         Index("idx_document_owner", "owner_user_id"),
         CheckConstraint(
-            "status IN ('pending','running','done','failed','deleting')",
+            "status IN ('pending','running','uploaded','profiling','awaiting_mapping',"
+            "'previewing','queued','mapping','chunking','embedding','indexing_lexical',"
+            "'indexing_dense','activating','done','done_with_warnings','failed','deleting')",
             name="ck_rag_document_status",
         ),
         CheckConstraint("chunk_count >= 0", name="ck_rag_document_chunk_count"),
@@ -154,6 +156,17 @@ class Document(Base):
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     file_size_bytes: Mapped[int | None] = mapped_column(BigInteger)
     content_hash: Mapped[str | None] = mapped_column(String(64))
+    active_ingest_run_id: Mapped[str | None] = mapped_column(
+        String(36),
+        ForeignKey(
+            "rag_ingest_run.id",
+            name="fk_document_active_ingest_run",
+            ondelete="SET NULL",
+            use_alter=True,
+        ),
+    )
+    processed_path: Mapped[str | None] = mapped_column(String(1000))
+    mapping_errors_path: Mapped[str | None] = mapped_column(String(1000))
     error_message: Mapped[str | None] = mapped_column(Text)
     ingested_at: Mapped[datetime | None] = mapped_column(DateTime)
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
@@ -180,7 +193,9 @@ class DocumentJob(Base):
             name="ck_rag_document_job_status",
         ),
         CheckConstraint(
-            "stage IS NULL OR stage IN ('parsing','chunking','embedding','indexing')",
+            "stage IS NULL OR stage IN ('parsing','indexing','profiling','awaiting_mapping',"
+            "'previewing','queued','mapping','chunking','embedding','indexing_lexical',"
+            "'indexing_dense','activating')",
             name="ck_rag_document_job_stage",
         ),
         CheckConstraint("attempts >= 0", name="ck_rag_document_job_attempts"),
@@ -195,6 +210,94 @@ class DocumentJob(Base):
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'pending'"))
     stage: Mapped[str | None] = mapped_column(String(20))
     attempts: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error_message: Mapped[str | None] = mapped_column(Text)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP
+    )
+
+
+class MappingTemplate(Base):
+    __tablename__ = "rag_mapping_template"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    source_format: Mapped[str] = mapped_column(String(20), nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP
+    )
+
+
+class MappingTemplateVersion(Base):
+    __tablename__ = "rag_mapping_template_version"
+    __table_args__ = (
+        UniqueConstraint("mapping_template_id", "version", name="uk_mapping_template_version"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    mapping_template_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("rag_mapping_template.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    version: Mapped[int] = mapped_column(Integer, nullable=False)
+    mapping_json: Mapped[str] = mapped_column(Text, nullable=False)
+    structure_fingerprint: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
+
+
+class DocumentMapping(Base):
+    __tablename__ = "rag_document_mapping"
+    __table_args__ = (
+        UniqueConstraint("document_id", name="uk_document_mapping_document"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_document.id", ondelete="CASCADE"), nullable=False
+    )
+    mapping_version_id: Mapped[int] = mapped_column(
+        BigInteger,
+        ForeignKey("rag_mapping_template_version.id", ondelete="RESTRICT"),
+        nullable=False,
+    )
+    confirmed_by_user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_user.id", ondelete="RESTRICT"), nullable=False
+    )
+    confirmed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+
+
+class IngestRun(Base):
+    __tablename__ = "rag_ingest_run"
+    __table_args__ = (
+        CheckConstraint("total_records >= 0", name="ck_ingest_run_total_records"),
+        CheckConstraint("processed_records >= 0", name="ck_ingest_run_processed_records"),
+        CheckConstraint("error_count >= 0", name="ck_ingest_run_error_count"),
+        CheckConstraint("chunk_count >= 0", name="ck_ingest_run_chunk_count"),
+        Index("idx_ingest_run_document", "document_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    document_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_document.id", ondelete="CASCADE"), nullable=False
+    )
+    state: Mapped[str] = mapped_column(String(30), nullable=False)
+    total_records: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    processed_records: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    error_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
+    records_path: Mapped[str | None] = mapped_column(String(1000))
+    mapping_errors_path: Mapped[str | None] = mapped_column(String(1000))
+    manifest_path: Mapped[str | None] = mapped_column(String(1000))
     error_message: Mapped[str | None] = mapped_column(Text)
     started_at: Mapped[datetime | None] = mapped_column(DateTime)
     finished_at: Mapped[datetime | None] = mapped_column(DateTime)

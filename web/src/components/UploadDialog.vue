@@ -26,14 +26,17 @@
         ref="fileInput"
         type="file"
         multiple
-        accept=".txt,.md,.markdown"
+        accept=".txt,.md,.markdown,.json,.jsonl"
         class="upload-drop__input"
         @change="handleInputChange"
       />
       <el-icon class="upload-drop__icon" aria-hidden="true"><UploadFilled /></el-icon>
       <p class="upload-drop__title">{{ dragging ? '松开以添加文件' : '拖拽文件到此处，或点击选择' }}</p>
-      <p class="upload-drop__hint">支持 .txt / .md / .markdown，可多选</p>
+      <p class="upload-drop__hint">支持 .txt / .md / .markdown / .json / .jsonl（JSON 进入映射向导）</p>
     </div>
+
+    <!-- 不支持扩展名的内联错误 -->
+    <p v-if="inlineError" class="upload-drop__inline-error" role="alert">{{ inlineError }}</p>
 
     <!-- 队列列表 -->
     <div v-if="items.length" class="upload-queue">
@@ -110,15 +113,27 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:visible', v: boolean): void
   (e: 'uploaded', doc: DocInfo): void
+  /** JSON/JSONL 文件：打开映射向导（不进入 legacy 三路上传队列） */
+  (e: 'open-json-wizard', file: File): void
 }>()
 
 const UPLOAD_CONCURRENCY = 3
 const DONE_HOLD_MS = 1200
 
+/** 支持的文本扩展名（legacy 三路队列）与 JSON 扩展名（映射向导） */
+const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown'])
+const JSON_EXTENSIONS = new Set(['.json', '.jsonl'])
+
+function extensionOf(name: string): string {
+  const idx = name.lastIndexOf('.')
+  return idx < 0 ? '' : name.slice(idx).toLowerCase()
+}
+
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 const items = ref<UploadItem[]>([])
 const batchRunning = ref(false)
+const inlineError = ref('')
 let nextUploadId = 1
 
 const successCount = computed(() => items.value.filter((it) => it.status === 'success').length)
@@ -153,13 +168,29 @@ const breathMotion = {
   },
 }
 
-/* ── 文件入队 ── */
+/* ── 文件入队：按扩展名路由（TXT/MD → legacy 队列；JSON/JSONL → 向导） ── */
 function enqueue(files: FileList | File[]) {
   const list = Array.from(files).filter((f) => f.size > 0)
   if (!list.length) return
+  inlineError.value = ''
+
+  const textFiles: File[] = []
+  for (const f of list) {
+    const ext = extensionOf(f.name)
+    if (JSON_EXTENSIONS.has(ext)) {
+      // JSON/JSONL：打开映射向导，不进入 legacy 上传队列
+      emit('open-json-wizard', f)
+    } else if (TEXT_EXTENSIONS.has(ext)) {
+      textFiles.push(f)
+    } else {
+      inlineError.value = `不支持的文件类型：${f.name}（支持 .txt/.md/.markdown/.json/.jsonl）`
+    }
+  }
+
+  if (!textFiles.length) return
   items.value = [
     ...items.value,
-    ...list.map((f) => ({ id: nextUploadId++, file: f, status: 'pending' as const, error: null })),
+    ...textFiles.map((f) => ({ id: nextUploadId++, file: f, status: 'pending' as const, error: null })),
   ]
   void drainQueue()
 }
@@ -186,6 +217,7 @@ function handleClosed() {
   // 弹窗关闭后清空队列，下次打开是全新批次
   items.value = []
   batchRunning.value = false
+  inlineError.value = ''
 }
 
 /* ── 并发上传池 ── */
@@ -270,6 +302,7 @@ watch(
     if (v) {
       items.value = []
       batchRunning.value = false
+      inlineError.value = ''
     }
   },
 )
@@ -323,6 +356,12 @@ watch(
 .upload-drop__hint {
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.upload-drop__inline-error {
+  margin-top: 10px;
+  font-size: 12px;
+  color: var(--accent-red);
 }
 
 /* ── 队列 ── */

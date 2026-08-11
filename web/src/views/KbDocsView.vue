@@ -16,6 +16,17 @@
       v-model:visible="uploadVisible"
       :kb-id="kbId"
       @uploaded="handleUploaded"
+      @open-json-wizard="handleOpenJsonWizard"
+    />
+
+    <!-- ══ JSON 映射向导：JSON/JSONL 结构化入库 ══ -->
+    <JsonMappingWizard
+      v-if="wizardVisible && kbId !== null"
+      :visible="wizardVisible"
+      :kb-id="kbId"
+      :doc-id="wizardDocId"
+      @close="wizardVisible = false"
+      @ingested="handleWizardIngested"
     />
 
     <!-- 首次加载 -->
@@ -181,8 +192,8 @@
           </template>
         </el-table-column>
 
-        <!-- 状态：胶囊 + stage / 错误提示 + 重试 -->
-        <el-table-column label="状态" width="130" align="center">
+        <!-- 状态：胶囊 + stage / 错误提示 + 重试 / 继续配置 / 下载错误 -->
+        <el-table-column label="状态" width="190" align="center">
           <template #default="{ row }">
             <div class="doc-status-cell">
               <span class="doc-status" :class="`doc-status--${row.status}`">
@@ -207,6 +218,46 @@
                   <el-icon aria-hidden="true"><Warning /></el-icon>
                 </span>
               </el-tooltip>
+              <el-tooltip
+                v-if="row.status === 'done_with_warnings' && row.error_message"
+                :content="row.error_message"
+                placement="top"
+                :show-after="300"
+              >
+                <span class="doc-status__error doc-status__error--warn" tabindex="0" aria-label="警告信息">
+                  <el-icon aria-hidden="true"><Warning /></el-icon>
+                </span>
+              </el-tooltip>
+              <div v-if="row.status === 'awaiting_mapping'" class="doc-status-cell__actions">
+                <button
+                  type="button"
+                  class="doc-action doc-action--primary btn-press"
+                  :aria-label="`继续配置 ${row.title} 的映射`"
+                  @click="handleContinueMapping(row)"
+                >
+                  继续配置
+                </button>
+              </div>
+              <div v-else-if="row.status === 'done_with_warnings'" class="doc-status-cell__actions">
+                <button
+                  type="button"
+                  class="doc-action doc-action--primary btn-press"
+                  :aria-label="`下载 ${row.title} 的逐记录错误`"
+                  @click="downloadMappingErrors(row)"
+                >
+                  下载错误
+                </button>
+              </div>
+              <div v-else-if="row.status === 'failed' && row.mapping_ready" class="doc-status-cell__actions">
+                <button
+                  type="button"
+                  class="doc-action doc-action--primary btn-press"
+                  :aria-label="`下载 ${row.title} 的逐记录错误`"
+                  @click="downloadMappingErrors(row)"
+                >
+                  下载错误
+                </button>
+              </div>
               <button
                 v-if="row.status === 'failed'"
                 type="button"
@@ -391,16 +442,20 @@ import {
   deleteDoc,
   docStatus,
   getDocRaw,
+  isNonterminal,
   listDocs,
+  mappingErrorsUrl,
   normalizeDocStatus,
   reindexDoc,
   type DocDisplayStatus,
   type DocInfo,
+  type DocListEntry,
   type DocStage,
 } from '../api/docs'
 import { listChunks } from '../api/retrieval'
 import type { ChunkInfo } from '../api/retrieval'
 import UploadDialog from '../components/UploadDialog.vue'
+import JsonMappingWizard from '../components/json-mapping/JsonMappingWizard.vue'
 
 const route = useRoute()
 const router = useRouter()
@@ -413,7 +468,7 @@ const kbId = computed(() => {
 })
 
 /* ── 列表加载 ── */
-const docs = ref<DocInfo[]>([])
+const docs = ref<DocListEntry[]>([])
 const loading = ref(true)
 const loadFailed = ref(false)
 const errorMessage = ref('')
@@ -429,6 +484,10 @@ async function loadDocs() {
   loadFailed.value = false
   try {
     docs.value = await listDocs(id)
+    // 列表刷新：对非终态文档恢复轮询（含重进页面后未完成的入库）
+    for (const doc of docs.value) {
+      if (isNonterminal(doc.status)) pollDoc(doc.id)
+    }
   } catch (err) {
     loadFailed.value = true
     errorMessage.value = getErrorMessage(err)
@@ -622,6 +681,7 @@ interface DocRow {
   chunk_count: number
   file_size_bytes: number | null
   error_message: string | null
+  mapping_ready: boolean
   created_at: string | null
 }
 
@@ -634,6 +694,7 @@ const rows = computed<DocRow[]>(() =>
     chunk_count: doc.chunk_count,
     file_size_bytes: doc.file_size_bytes,
     error_message: doc.error_message,
+    mapping_ready: doc.mapping_ready ?? false,
     created_at: doc.created_at,
   })),
 )
@@ -653,7 +714,9 @@ type ChunkFilter = 'has' | 'none' | null
 const STATUS_OPTIONS: { value: DocDisplayStatus; label: string }[] = [
   { value: 'pending', label: '等待中' },
   { value: 'running', label: '解析中' },
+  { value: 'awaiting_mapping', label: '等待映射' },
   { value: 'done', label: '已完成' },
+  { value: 'done_with_warnings', label: '完成（有警告）' },
   { value: 'failed', label: '失败' },
   { value: 'deleting', label: '删除中' },
 ]
@@ -781,8 +844,57 @@ const uploadVisible = ref(false)
 
 /** 上传成功：追加列表并启动轮询（UploadDialog 已构造 DocInfo） */
 function handleUploaded(doc: DocInfo) {
-  docs.value = [...docs.value, doc]
+  docs.value = [...docs.value, { ...doc, mapping_ready: false }]
   pollDoc(doc.id)
+}
+
+/* ── JSON 映射向导 ── */
+const wizardVisible = ref(false)
+const wizardDocId = ref<number | null>(null)
+
+/** JSON/JSONL 文件：关闭上传弹窗并打开映射向导（不进入 legacy 队列） */
+function handleOpenJsonWizard(file: File) {
+  // 单文件向导：一次只打开一个 JSON 会话
+  void file
+  uploadVisible.value = false
+  wizardDocId.value = null
+  wizardVisible.value = true
+}
+
+/** 向导确认入库成功：追加文档并轮询新状态（awaiting_mapping → ... → done） */
+function handleWizardIngested(payload: { docId: number; jobId: number }) {
+  wizardVisible.value = false
+  wizardDocId.value = payload.docId
+  const doc: DocInfo = {
+    id: payload.docId,
+    title: 'JSON 文档',
+    source: 'JSON 映射',
+    source_type: 'file',
+    status: 'awaiting_mapping',
+    chunk_count: 0,
+    file_size_bytes: null,
+    error_message: null,
+    created_at: new Date().toISOString(),
+    ingested_at: null,
+  }
+  docs.value = [...docs.value, { ...doc, mapping_ready: true }]
+  pollDoc(payload.docId)
+}
+
+/* ── 等待映射的文档：重新打开映射向导继续配置 ── */
+function handleContinueMapping(row: DocRow) {
+  wizardDocId.value = row.id
+  wizardVisible.value = true
+}
+
+/** 逐记录错误下载：浏览器直接下载服务端生成的 JSONL */
+function downloadMappingErrors(row: DocRow) {
+  const link = document.createElement('a')
+  link.href = mappingErrorsUrl(row.id)
+  link.download = ''
+  document.body.appendChild(link)
+  link.click()
+  link.remove()
 }
 
 /* ── 轮询 docStatus：2 秒间隔，直到 done/failed，卸载清理 ── */
@@ -806,12 +918,15 @@ async function tick(docId: number, timer: number) {
   try {
     const detail = await docStatus(id, docId)
     const status = normalizeDocStatus(detail.status)
-    // 不可变更新：状态/chunk 数回写 docs，stage 走 stageOverride
+    // 不可变更新：状态/chunk 数/错误回写 docs，stage 走 stageOverride
     docs.value = docs.value.map((doc) =>
-      doc.id === docId ? { ...doc, status: detail.status, chunk_count: detail.chunk_count } : doc,
+      doc.id === docId
+        ? { ...doc, status: detail.status, chunk_count: detail.chunk_count, error_message: detail.error_message }
+        : doc,
     )
     stageOverride.value = new Map(stageOverride.value).set(docId, detail.stage)
-    if (status === 'done' || status === 'failed') {
+    // 非终态持续轮询；终态（done/done_with_warnings/failed/deleting）停止
+    if (!isNonterminal(status)) {
       stopPoll(docId, timer)
     }
   } catch {
@@ -923,16 +1038,26 @@ function isBusy(row: DocRow): boolean {
 const STATUS_LABEL: Record<DocDisplayStatus, string> = {
   pending: '等待中',
   running: '解析中',
+  awaiting_mapping: '等待映射',
   done: '已完成',
+  done_with_warnings: '完成（有警告）',
   failed: '失败',
   deleting: '删除中',
 }
 
 const STAGE_LABEL: Record<DocStage, string> = {
   parsing: '解析文本',
+  indexing: '写入索引',
+  profiling: '结构检测',
+  awaiting_mapping: '等待映射',
+  previewing: '真实预览',
+  queued: '排队中',
+  mapping: '生成记录',
   chunking: '分块',
   embedding: '向量化',
-  indexing: '写入索引',
+  indexing_lexical: '全文索引',
+  indexing_dense: '向量索引',
+  activating: '正在激活',
 }
 
 function statusLabel(status: DocDisplayStatus): string {
@@ -1275,6 +1400,11 @@ const breathMotion = {
   color: var(--text-secondary);
 }
 
+.doc-status--awaiting_mapping {
+  background: color-mix(in srgb, var(--accent-orange) 12%, transparent);
+  color: var(--accent-orange);
+}
+
 .doc-status--running {
   background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
   color: var(--accent-blue);
@@ -1283,6 +1413,11 @@ const breathMotion = {
 .doc-status--done {
   background: color-mix(in srgb, var(--accent-green) 12%, transparent);
   color: var(--accent-green);
+}
+
+.doc-status--done_with_warnings {
+  background: color-mix(in srgb, var(--accent-orange) 12%, transparent);
+  color: var(--accent-orange);
 }
 
 .doc-status--failed {
@@ -1314,6 +1449,17 @@ const breathMotion = {
   color: var(--accent-red);
   font-size: 14px;
   cursor: help;
+}
+
+.doc-status__error--warn {
+  color: var(--accent-orange);
+}
+
+/* 状态单元格内的行内操作（继续配置 / 下载错误） */
+.doc-status-cell__actions {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
 }
 
 /* ── 数值列 ── */
