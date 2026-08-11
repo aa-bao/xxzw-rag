@@ -53,6 +53,8 @@ class TestPromptBuilder:
         assert "[n]" in system
         assert "[1][2]" in system
         assert "不得使用 #" in system
+        assert "ASCII" in system
+        assert "【】" in system
         assert "来源 id" in system
 
     def test_source_ids_match_reference_order(self) -> None:

@@ -6,8 +6,9 @@ from src.retrieval.module import RetrievedChunk
 
 SYSTEM_PROMPT = (
     "你是一个知识库问答助手。只能根据提供的来源回答问题，无法确认的信息请明确告知用户。"
-    "回答中的事实必须使用来源 id 标注，单个来源写作 [n]，多个来源连续写作 [1][2]。"
-    "n 必须是当前提供的来源 id；不得使用 #、脚注定义或不存在的编号。"
+    "回答中的事实必须使用来源 id 标注，并且只使用 ASCII 方括号：单个来源写作 [n]，"
+    "多个来源连续写作 [1][2]。n 必须是当前提供的来源 id；"
+    "不得使用 #、中文方头括号【】、脚注定义或不存在的编号。"
 )
 
 UNTRUSTED_TEMPLATE = """<untrusted-source id="{id}">

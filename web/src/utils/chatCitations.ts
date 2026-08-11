@@ -201,13 +201,16 @@ md.core.ruler.after('inline', 'chat_citations', (state) => {
         let position = 0
         let transformed = false
         while (position < segment.content.length) {
-          if (segment.content.charCodeAt(position) !== 0x5b) {
+          const openingCode = segment.content.charCodeAt(position)
+          if (openingCode !== 0x5b && openingCode !== 0x3010) {
             position += 1
             continue
           }
 
           const source = segment.content.slice(position)
-          const match = /^\[(\d+)\]/.exec(source) ?? /^\[(\d+(?:##\d+)*)#\]?/.exec(source)
+          const match = openingCode === 0x3010
+            ? /^【(\d+)】/.exec(source) ?? /^【(\d+(?:##\d+)*)#】?/.exec(source)
+            : /^\[(\d+)\]/.exec(source) ?? /^\[(\d+(?:##\d+)*)#\]?/.exec(source)
           if (!match) {
             position += 1
             continue

@@ -2,6 +2,30 @@ import { describe, expect, it } from 'vitest'
 import { citationIndexFromClick, renderChatMarkdown } from './chatCitations'
 
 describe('renderChatMarkdown', () => {
+  it('normalizes fullwidth citation markers into digit-only buttons', () => {
+    const html = renderChatMarkdown('A【1】 B【1#】 C【1##2#】', 2)
+    const root = document.createElement('div')
+    root.innerHTML = html
+    const buttons = [...root.querySelectorAll('button[data-reference-index]')]
+
+    expect(buttons.map((button) => button.getAttribute('data-reference-index'))).toEqual([
+      '0',
+      '0',
+      '0',
+      '1',
+    ])
+    expect(buttons.map((button) => button.textContent)).toEqual(['1', '1', '1', '2'])
+    expect(buttons.every((button) => /^\d+$/.test(button.textContent ?? ''))).toBe(true)
+  })
+
+  it('keeps out-of-range fullwidth citations as text', () => {
+    const html = renderChatMarkdown('【3】 【1##3#】', 2)
+
+    expect(html).toContain('【3】')
+    expect(html).toContain('【1##3#】')
+    expect(html).not.toContain('chat-view__inline-cite')
+  })
+
   it('renders canonical and malformed citations as bounded buttons', () => {
     const html = renderChatMarkdown('A[1] B[1][2] C[1# D[1##2#', 2)
     expect(html.match(/data-reference-index="0"/g)).toHaveLength(4)
