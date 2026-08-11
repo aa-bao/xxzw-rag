@@ -73,7 +73,7 @@
 
           <div
             v-for="(msg, i) in messages"
-            :key="i"
+            :key="`chat-message-${activeConversationId ?? 'new'}-${i}`"
             class="chat-view__msg"
             :class="msg.role === 'user' ? 'chat-view__msg--user' : 'chat-view__msg--assistant'"
             v-motion="msgMotion"
@@ -130,7 +130,7 @@
             <div v-else class="chat-view__thinking glass-surface" aria-live="polite">
               <span class="chat-view__thinking-label">正在思考</span>
               <span class="chat-view__thinking-dots" aria-hidden="true">
-                <i v-for="n in 3" :key="n" class="chat-view__thinking-dot" v-motion="dotMotion"></i>
+                <i v-for="n in 3" :key="`thinking-dot-${n}`" class="chat-view__thinking-dot" v-motion="dotMotion"></i>
               </span>
             </div>
           </div>
@@ -157,7 +157,7 @@
           >
             <el-icon v-if="!loading" class="chat-view__send-icon"><Promotion /></el-icon>
             <span v-else class="chat-view__send-dots" aria-hidden="true">
-              <i v-for="n in 3" :key="n" class="chat-view__send-dot" v-motion="dotMotion"></i>
+              <i v-for="n in 3" :key="`send-dot-${n}`" class="chat-view__send-dot" v-motion="dotMotion"></i>
             </span>
           </button>
         </form>
