@@ -1,5 +1,5 @@
 app:
-  browser_origin: http://127.0.0.1:8000
+  browser_origin: http://127.0.0.1:5174
   secure_cookie: false
 
 rag:
