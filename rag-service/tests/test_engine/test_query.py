@@ -210,3 +210,86 @@ async def test_run_expands_globally_truncated_cores_for_prompt_references_and_lo
             ]
     finally:
         await engine.dispose()
+
+
+async def test_run_rewrites_follow_up_before_retrieval(
+    migrated_mysql_url: str,
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            user = User(
+                username=f"u-{uuid.uuid4().hex[:8]}",
+                password_hash="h",
+                role="user",
+                status="active",
+            )
+            session.add(user)
+            await session.flush()
+            kb = KnowledgeBase(
+                owner_user_id=user.id,
+                name="kb",
+                embedding_model="t",
+                embedding_dimension=128,
+                active_collection="rewrite-test",
+            )
+            session.add(kb)
+            await session.flush()
+            conversation = Conversation(id=uuid.uuid4().hex, owner_user_id=user.id)
+            session.add(conversation)
+            session.add(
+                ConversationKb(
+                    conversation_id=conversation.id,
+                    kb_id=kb.id,
+                    owner_user_id=user.id,
+                )
+            )
+            session.add_all(
+                [
+                    Message(
+                        conversation_id=conversation.id,
+                        role="user",
+                        content="张三负责什么工作？",
+                        status="completed",
+                        sequence=0,
+                    ),
+                    Message(
+                        conversation_id=conversation.id,
+                        role="assistant",
+                        content="张三负责财务审批。",
+                        status="completed",
+                        sequence=1,
+                    ),
+                ]
+            )
+            await session.commit()
+            conversation_id, user_id, kb_id = conversation.id, user.id, kb.id
+
+        retrieval = FakeRetrieval(
+            [RetrievedChunk("c1", "张三于 2024 年入职。", 1, "staff.txt", None, 0.9)]
+        )
+        chat = FakeChatClient(rewritten_question="张三什么时候入职？")
+        query_engine = QueryEngine(retrieval, chat)
+
+        async with factory() as session:
+            events = [
+                event
+                async for event in query_engine.run(
+                    session,
+                    conversation_id=conversation_id,
+                    question="他什么时候入职？",
+                    user_id=user_id,
+                    kb_ids=[kb_id],
+                    top_k=5,
+                )
+            ]
+
+        assert any("event: done" in event for event in events)
+        assert retrieval.last_query == "张三什么时候入职？"
+        assert retrieval.last_expand_query == "张三什么时候入职？"
+        assert chat.last_complete_messages[-1]["content"] == "他什么时候入职？"
+        # The answering prompt still presents the user's original wording.
+        assert "用户问题: 他什么时候入职？" in chat.last_messages[-1]["content"]
+    finally:
+        await engine.dispose()

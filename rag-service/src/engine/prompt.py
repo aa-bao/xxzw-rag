@@ -16,6 +16,22 @@ UNTRUSTED_TEMPLATE = """<untrusted-source id="{id}">
 {kb_info}内容: {content}
 </untrusted-source>"""
 
+REWRITE_SYSTEM_PROMPT = """你负责把多轮对话中的最新问题改写成可独立理解的检索问题。
+结合对话历史补全代词、省略的实体和必要上下文，但不得回答问题，不得添加历史中不存在的信息。
+只输出改写后的问题正文，不要输出解释、标签、引号或 Markdown。"""
+
+
+def build_rewrite_messages(
+    question: str,
+    history: list[dict[str, str]],
+) -> list[dict[str, str]]:
+    """Build a focused prompt that turns a follow-up into a standalone query."""
+    return [
+        {"role": "system", "content": REWRITE_SYSTEM_PROMPT},
+        *history,
+        {"role": "user", "content": question},
+    ]
+
 
 def build_messages(
     question: str,

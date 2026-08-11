@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from src.db.models import Conversation, Message, Reference, QueryLog
 from src.engine.history import truncate_history
-from src.engine.prompt import build_messages
+from src.engine.prompt import build_messages, build_rewrite_messages
 from src.models.llm import ChatClient, ModelError
 from src.retrieval.module import RetrievedChunk, RetrievalModule
 from src.shared.errors import AppError
@@ -71,6 +71,19 @@ class QueryEngine:
         ]
         history_roles = truncate_history(history_roles, max_tokens=self._max_history_tokens)
 
+        # Resolve pronouns and omitted context before retrieval. Rewriting is best-effort:
+        # an unavailable model must not prevent the existing single-turn path from working.
+        retrieval_question = question
+        if history_roles:
+            try:
+                rewritten = await self._chat.complete(
+                    build_rewrite_messages(question, history_roles)
+                )
+                if rewritten:
+                    retrieval_question = rewritten
+            except ModelError:
+                pass
+
         # Save user message
         max_seq = await db.scalar(
             select(Message.sequence).where(
@@ -108,7 +121,7 @@ class QueryEngine:
 
         # Retrieve：对每个知识库分别检索，合并后按 score 降序整体截断 top_k
         core_sources = await self._retrieval.retrieve_multi(
-            question, user_id, kb_ids, top_k, similarity_threshold
+            retrieval_question, user_id, kb_ids, top_k, similarity_threshold
         )
 
         if not core_sources:
@@ -122,7 +135,7 @@ class QueryEngine:
             return
 
         sources = await self._retrieval.expand_context(
-            question, user_id, core_sources
+            retrieval_question, user_id, core_sources
         )
 
         messages = build_messages(question, history_roles, sources)

@@ -32,6 +32,20 @@ class TestTruncateHistory:
 
 
 class TestPromptBuilder:
+    def test_rewrite_prompt_preserves_history_and_latest_question(self) -> None:
+        from src.engine.prompt import build_rewrite_messages
+
+        history = [
+            {"role": "user", "content": "张三负责什么工作？"},
+            {"role": "assistant", "content": "张三负责财务审批。"},
+        ]
+        messages = build_rewrite_messages("他什么时候入职？", history)
+
+        assert messages[0]["role"] == "system"
+        assert "改写" in messages[0]["content"]
+        assert messages[1:-1] == history
+        assert messages[-1] == {"role": "user", "content": "他什么时候入职？"}
+
     def test_system_prompt_requires_canonical_citations(self) -> None:
         from src.engine.prompt import build_messages
 

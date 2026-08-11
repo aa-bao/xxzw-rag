@@ -70,8 +70,14 @@ class FakeRetrieval(RetrievalModule):
 
 
 class FakeChatClient:
-    def __init__(self) -> None:
+    def __init__(self, rewritten_question: str = "") -> None:
         self.last_messages: list[dict[str, str]] = []
+        self.rewritten_question = rewritten_question
+        self.last_complete_messages: list[dict[str, str]] = []
+
+    async def complete(self, messages: list[dict[str, str]]) -> str:
+        self.last_complete_messages = messages
+        return self.rewritten_question
 
     async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
         self.last_messages = messages

@@ -36,6 +36,11 @@ class _FakeStreamTransport(httpx.AsyncBaseTransport):
         lines.append(b"data: [DONE]\n\n")
         self._queue.append(b"".join(lines))
 
+    def enqueue_completion(self, content: str) -> None:
+        self._queue.append(
+            json.dumps({"choices": [{"message": {"content": content}}]}).encode()
+        )
+
 
 @pytest.fixture
 def sse_transport() -> _FakeStreamTransport:
@@ -71,6 +76,16 @@ async def test_chat_yields_openai_compatible_deltas(
     parts = [part async for part in chat_client.stream([{"role": "user", "content": "x"}])]
 
     assert parts == ["hello", " world"]
+
+
+async def test_chat_returns_non_streaming_completion(
+    chat_client: ChatClient, sse_transport: _FakeStreamTransport
+) -> None:
+    sse_transport.enqueue_completion("  standalone question  ")
+
+    content = await chat_client.complete([{"role": "user", "content": "follow-up"}])
+
+    assert content == "standalone question"
 
 
 async def test_chat_exposes_whether_failure_happened_before_content(
