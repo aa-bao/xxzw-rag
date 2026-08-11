@@ -32,6 +32,11 @@ class QueryRequest(BaseModel):
     question: str = Field(min_length=1)
 
 
+class RenameConversationRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    title: str = Field(min_length=1, max_length=500)
+
+
 def _build_query_engine(request: Request) -> QueryEngine:
     """Build the QueryEngine from app state, sharing the model-relay client."""
     settings = request.app.state.settings
@@ -235,6 +240,40 @@ async def delete_conversation(
     await db.execute(delete(Conversation).where(Conversation.id == conversation_id))
     await db.commit()
     return {"success": True, "data": {"id": conversation_id}}
+
+
+@router.patch("/conversations/{conversation_id}")
+async def rename_conversation(
+    conversation_id: str,
+    body: RenameConversationRequest,
+    user_id: int = Depends(require_user),
+    db: AsyncSession = Depends(_session_factory),
+) -> dict[str, object]:
+    conv = await db.scalar(
+        select(Conversation).where(
+            Conversation.id == conversation_id,
+            Conversation.owner_user_id == user_id,
+        )
+    )
+    if conv is None:
+        raise AppError("CONV_NOT_FOUND", "对话不存在", status_code=404)
+
+    title = body.title.strip()
+    if not title:
+        raise AppError("CONV_TITLE_BLANK", "对话标题不能为空", status_code=422)
+
+    conv.title = title
+    await db.commit()
+    await db.refresh(conv)
+
+    return {
+        "success": True,
+        "data": {
+            "id": conv.id,
+            "title": conv.title,
+            "updated_at": conv.updated_at.isoformat() if conv.updated_at else None,
+        },
+    }
 
 
 @router.post("/query")

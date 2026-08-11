@@ -610,3 +610,141 @@ async def test_multi_kb_conversation_merges_retrieval_and_reports_kb(
             assert all(r.kb_name is not None for r in refs)
     finally:
         await engine.dispose()
+
+
+async def test_rename_conversation_title(
+    migrated_mysql_url: str,
+) -> None:
+    """本人可重命名会话标题，历史接口返回新标题。"""
+    hasher = PasswordHasher()
+    username = f"alice-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            u = User(username=username, password_hash=hasher.hash("s"), role="user", status="active")
+            session.add(u)
+            await session.flush()
+            kb = KnowledgeBase(
+                owner_user_id=u.id, name="k", embedding_model="t",
+                embedding_dimension=128, active_collection="x",
+            )
+            session.add(kb)
+            await session.commit()
+            kb_id = kb.id
+
+        app = create_app(_settings(migrated_mysql_url), session_factory=factory)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000",
+        ) as client:
+            cookie = await _login(client, username, "s")
+            cr = await client.post(
+                "/api/chat/conversations",
+                json={"kb_ids": [kb_id]},
+                cookies={"rag_session": cookie},
+            )
+            cid = cr.json()["data"]["id"]
+
+            rr = await client.patch(
+                f"/api/chat/conversations/{cid}",
+                json={"title": "新的标题"},
+                cookies={"rag_session": cookie},
+            )
+            assert rr.status_code == 200
+            assert rr.json()["data"]["id"] == cid
+            assert rr.json()["data"]["title"] == "新的标题"
+
+            lr = await client.get("/api/chat/history", cookies={"rag_session": cookie})
+            titles = [c["title"] for c in lr.json()["data"]]
+            assert "新的标题" in titles
+    finally:
+        await engine.dispose()
+
+
+async def test_rename_conversation_rejects_other_users(
+    migrated_mysql_url: str,
+) -> None:
+    """他人会话不可重命名（404，不泄露存在性）。"""
+    hasher = PasswordHasher()
+    username = f"alice-{uuid.uuid4().hex[:8]}"
+    other = f"bob-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            u = User(username=username, password_hash=hasher.hash("s"), role="user", status="active")
+            o = User(username=other, password_hash=hasher.hash("s"), role="user", status="active")
+            session.add_all([u, o])
+            await session.flush()
+            kb = KnowledgeBase(
+                owner_user_id=u.id, name="k", embedding_model="t",
+                embedding_dimension=128, active_collection="x",
+            )
+            session.add(kb)
+            await session.commit()
+            kb_id = kb.id
+
+        app = create_app(_settings(migrated_mysql_url), session_factory=factory)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000",
+        ) as client:
+            cookie = await _login(client, username, "s")
+            cr = await client.post(
+                "/api/chat/conversations",
+                json={"kb_ids": [kb_id]},
+                cookies={"rag_session": cookie},
+            )
+            cid = cr.json()["data"]["id"]
+
+            other_cookie = await _login(client, other, "s")
+            rr = await client.patch(
+                f"/api/chat/conversations/{cid}",
+                json={"title": "篡改"},
+                cookies={"rag_session": other_cookie},
+            )
+            assert rr.status_code == 404
+    finally:
+        await engine.dispose()
+
+
+async def test_rename_conversation_rejects_blank_title(
+    migrated_mysql_url: str,
+) -> None:
+    """空白标题返回 422。"""
+    hasher = PasswordHasher()
+    username = f"alice-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            u = User(username=username, password_hash=hasher.hash("s"), role="user", status="active")
+            session.add(u)
+            await session.flush()
+            kb = KnowledgeBase(
+                owner_user_id=u.id, name="k", embedding_model="t",
+                embedding_dimension=128, active_collection="x",
+            )
+            session.add(kb)
+            await session.commit()
+            kb_id = kb.id
+
+        app = create_app(_settings(migrated_mysql_url), session_factory=factory)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000",
+        ) as client:
+            cookie = await _login(client, username, "s")
+            cr = await client.post(
+                "/api/chat/conversations",
+                json={"kb_ids": [kb_id]},
+                cookies={"rag_session": cookie},
+            )
+            cid = cr.json()["data"]["id"]
+
+            rr = await client.patch(
+                f"/api/chat/conversations/{cid}",
+                json={"title": "   "},
+                cookies={"rag_session": cookie},
+            )
+            assert rr.status_code == 422
+    finally:
+        await engine.dispose()

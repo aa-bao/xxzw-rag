@@ -47,6 +47,17 @@ export async function deleteConversation(id: string): Promise<void> {
   await api.delete<null>(`/chat/conversations/${id}`)
 }
 
+export async function renameConversation(
+  id: string,
+  title: string,
+): Promise<{ id: string; title: string; updated_at: string | null }> {
+  const resp = await api.patch<{ id: string; title: string; updated_at: string | null }>(
+    `/chat/conversations/${id}`,
+    { title },
+  )
+  return resp.data
+}
+
 export async function getMessages(conversationId: string): Promise<ChatMessageInfo[]> {
   const resp = await api.get<ChatMessageInfo[]>(`/chat/conversations/${conversationId}/messages`)
   return resp.data

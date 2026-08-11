@@ -42,8 +42,25 @@
                 class="chat-view__conv-btn btn-press"
                 :class="{ 'chat-view__conv-btn--active': conv.id === activeConversationId }"
                 @click="switchConversation(conv)"
+                @dblclick="startRename(conv)"
               >
-                <span class="chat-view__conv-title">{{ conv.title || '未命名对话' }}</span>
+                <span v-if="renamingId === conv.id" class="chat-view__conv-rename">
+                  <input
+                    ref="renameInputEl"
+                    v-model="renameDraft"
+                    class="chat-view__conv-rename-input"
+                    type="text"
+                    :maxlength="100"
+                    :placeholder="conv.title || '未命名对话'"
+                    @click.stop
+                    @keydown.enter.prevent="commitRename(conv)"
+                    @keydown.esc.prevent="cancelRename"
+                    @blur="commitRename(conv)"
+                  />
+                </span>
+                <span v-else class="chat-view__conv-title" :title="conv.title || ''">
+                  {{ conv.title || '未命名对话' }}
+                </span>
                 <span class="chat-view__conv-kb">{{ convKbLabel(conv) }}</span>
               </button>
               <el-button
@@ -224,6 +241,7 @@ import {
   getMessages,
   listConversations,
   queryRaw,
+  renameConversation,
 } from '../api/chat'
 import type { ChatMessageInfo, ConversationInfo, ReferenceInfo } from '../api/chat'
 import { listKbs } from '../api/kb'
@@ -245,6 +263,11 @@ const streaming = ref(false)
 const streamingContent = ref('')
 const streamingRefs = ref<ReferenceInfo[]>([])
 const messagesEl = ref<HTMLElement | null>(null)
+
+/* ── 会话重命名状态：双击标题进入编辑 ── */
+const renamingId = ref<string | null>(null)
+const renameDraft = ref('')
+const renameInputEl = ref<HTMLInputElement | null>(null)
 
 /** 加载历史消息的竞态令牌：快速切换会话/KB 时丢弃过期响应 */
 let loadToken = 0
@@ -489,6 +512,30 @@ async function handleDeleteConversation(conv: ConversationInfo) {
     resetStream()
   }
   ElMessage.success('已删除')
+}
+
+function startRename(conv: ConversationInfo) {
+  renamingId.value = conv.id
+  renameDraft.value = conv.title ?? ''
+  nextTick(() => renameInputEl.value?.select())
+}
+
+function cancelRename() {
+  renamingId.value = null
+  renameDraft.value = ''
+}
+
+async function commitRename(conv: ConversationInfo) {
+  if (renamingId.value !== conv.id) return
+  const title = renameDraft.value.trim()
+  renamingId.value = null
+  if (!title || title === (conv.title ?? '')) return
+  try {
+    await renameConversation(conv.id, title)
+    conv.title = title
+  } catch {
+    ElMessage.error('重命名会话失败')
+  }
 }
 
 /* ── KB 切换：多选过滤会话列表；清空不新建，非空无匹配会话则新建 ── */
@@ -776,6 +823,22 @@ onMounted(async () => {
 
 .chat-view__conv-btn--active .chat-view__conv-title {
   font-weight: 600;
+}
+
+.chat-view__conv-rename {
+  width: 100%;
+}
+
+.chat-view__conv-rename-input {
+  width: 100%;
+  padding: 2px 6px;
+  border: 1px solid var(--accent-blue);
+  border-radius: var(--radius-md);
+  background: var(--bg-card);
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 13px;
+  outline: none;
 }
 
 .chat-view__conv-kb {

@@ -40,6 +40,13 @@ class Client {
     })
   }
 
+  patch<T>(url: string, data?: unknown) {
+    return this.request<T>(url, {
+      method: 'PATCH',
+      body: data === undefined ? undefined : JSON.stringify(data),
+    })
+  }
+
   delete<T>(url: string) {
     return this.request<T>(url, { method: 'DELETE' })
   }
