@@ -12,6 +12,7 @@ dependencies = [
   "httpx>=0.28",
   "ijson>=3.4,<4",
   "pydantic-settings>=2.7",
+  "python-docx>=1.1",
   "python-multipart>=0.0.32",
   "pyyaml>=6.0",
   "sqlalchemy[asyncio]>=2.0.36",

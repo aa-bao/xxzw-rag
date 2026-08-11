@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies import _session_factory, require_admin, require_user
 from src.db.models import Document, DocumentJob, KnowledgeBase
 from src.db.repositories import KnowledgeBaseRepository
+from src.ingestion.docx import DocxParser
 from src.ingestion.factory import ParserFactory
 from src.ingestion.storage import atomic_save
 from src.ingestion.text import TxtParser
@@ -24,6 +25,11 @@ _factory = ParserFactory()
 _factory.register(".txt", "text/plain", TxtParser())
 _factory.register(".md", "text/markdown", TxtParser())
 _factory.register(".markdown", "text/markdown", TxtParser())
+_factory.register(
+    ".docx",
+    "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    DocxParser(),
+)
 
 # 软删文档状态：标记 deleting 后由异步 delete job 清理文件与向量
 _DOC_DELETE_STATUS = "deleting"
@@ -304,7 +310,7 @@ async def get_doc_raw(
     user_id: int = Depends(require_admin),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
-    """读取文档原始文件内容（txt/md 直接文本）。用于前端「原文 vs 切片」对比。"""
+    """读取文档原始文件内容（txt/md/docx 提取文本）。用于前端「原文 vs 切片」对比。"""
     await _get_kb_for_docs(db, kb_id)
     doc = await _get_doc(db, kb_id, doc_id)
 
@@ -314,13 +320,16 @@ async def get_doc_raw(
         raise AppError("DOC_FILE_MISSING", "原始文件不存在", status_code=404)
 
     ext = path.suffix.lower()
-    if ext not in (".txt", ".md", ".markdown"):
+    if ext in (".txt", ".md", ".markdown"):
+        try:
+            content = path.read_text(encoding="utf-8")
+        except UnicodeDecodeError:
+            raise AppError("DOC_ENCODING_UNSUPPORTED", "文件编码不支持预览", status_code=400)
+    elif ext == ".docx":
+        parser = _factory.parse(doc.title, "application/octet-stream", path.read_bytes())
+        content = "\n\n".join(section.text for section in parser)
+    else:
         raise AppError("DOC_PREVIEW_UNSUPPORTED", "该文件类型暂不支持预览", status_code=400)
-
-    try:
-        content = path.read_text(encoding="utf-8")
-    except UnicodeDecodeError:
-        raise AppError("DOC_ENCODING_UNSUPPORTED", "文件编码不支持预览", status_code=400)
 
     return {
         "success": True,

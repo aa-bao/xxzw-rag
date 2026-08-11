@@ -26,13 +26,13 @@
         ref="fileInput"
         type="file"
         multiple
-        accept=".txt,.md,.markdown,.json,.jsonl"
+        accept=".txt,.md,.markdown,.docx,.json,.jsonl"
         class="upload-drop__input"
         @change="handleInputChange"
       />
       <el-icon class="upload-drop__icon" aria-hidden="true"><UploadFilled /></el-icon>
       <p class="upload-drop__title">{{ dragging ? '松开以添加文件' : '拖拽文件到此处，或点击选择' }}</p>
-      <p class="upload-drop__hint">支持 .txt / .md / .markdown / .json / .jsonl（JSON 进入映射向导）</p>
+      <p class="upload-drop__hint">支持 .txt / .md / .markdown / .docx / .json / .jsonl（JSON 进入映射向导）</p>
     </div>
 
     <!-- 不支持扩展名的内联错误 -->
@@ -121,7 +121,7 @@ const UPLOAD_CONCURRENCY = 3
 const DONE_HOLD_MS = 1200
 
 /** 支持的文本扩展名（legacy 三路队列）与 JSON 扩展名（映射向导） */
-const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown'])
+const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.docx'])
 const JSON_EXTENSIONS = new Set(['.json', '.jsonl'])
 
 function extensionOf(name: string): string {
@@ -183,7 +183,7 @@ function enqueue(files: FileList | File[]) {
     } else if (TEXT_EXTENSIONS.has(ext)) {
       textFiles.push(f)
     } else {
-      inlineError.value = `不支持的文件类型：${f.name}（支持 .txt/.md/.markdown/.json/.jsonl）`
+      inlineError.value = `不支持的文件类型：${f.name}（支持 .txt/.md/.markdown/.docx/.json/.jsonl）`
     }
   }
 
