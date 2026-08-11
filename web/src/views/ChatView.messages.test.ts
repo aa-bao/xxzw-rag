@@ -10,7 +10,7 @@ const { queryRaw, streamSse } = vi.hoisted(() => ({
 }))
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: { kb: '1' } }),
+  useRoute: () => ({ query: {} }),
 }))
 
 vi.mock('../api/kb', () => ({
@@ -85,6 +85,10 @@ describe('ChatView message visibility', () => {
         },
       },
     })
+    await flushPromises()
+
+    // 打开「conversation-1」会话后发送第二条消息（回归：第二条消息流式完成后仍可见）
+    await wrapper.find('.chat-view__conv-btn').trigger('click')
     await flushPromises()
 
     await wrapper.get('textarea').setValue('second question')

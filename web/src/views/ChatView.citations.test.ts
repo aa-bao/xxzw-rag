@@ -3,7 +3,7 @@ import { describe, expect, it, vi } from 'vitest'
 import ChatView from './ChatView.vue'
 
 vi.mock('vue-router', () => ({
-  useRoute: () => ({ query: { kb: '1' } }),
+  useRoute: () => ({ query: {} }),
 }))
 
 vi.mock('../api/kb', () => ({
@@ -73,6 +73,10 @@ describe('ChatView citations', () => {
         },
       },
     })
+    await flushPromises()
+
+    // 打开「conversation-1」会话，加载其引用消息
+    await wrapper.find('.chat-view__conv-btn').trigger('click')
     await flushPromises()
 
     const citation = wrapper.get(

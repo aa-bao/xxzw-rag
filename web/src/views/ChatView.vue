@@ -17,23 +17,10 @@
           </el-button>
         </div>
 
-        <el-select
-          v-model="selectedKbIds"
-          class="chat-view__kb-select"
-          placeholder="选择知识库"
-          multiple
-          collapse-tags
-          collapse-tags-tooltip
-          aria-label="选择知识库"
-          @change="handleKbChange"
-        >
-          <el-option v-for="kb in kbs" :key="kb.id" :label="kb.name" :value="kb.id" />
-        </el-select>
-
         <nav class="chat-view__convs" aria-label="历史会话">
-          <ul v-if="filteredConversations.length" class="chat-view__conv-list">
+          <ul v-if="sortedConversations.length" class="chat-view__conv-list">
             <li
-              v-for="conv in filteredConversations"
+              v-for="conv in sortedConversations"
               :key="conv.id"
               class="chat-view__conv"
             >
@@ -73,19 +60,55 @@
               </el-button>
             </li>
           </ul>
-          <p v-else class="chat-view__convs-empty">
-            {{ selectedKbIds.length === 0 ? '请先选择知识库' : '暂无会话，点击「新对话」创建' }}
-          </p>
+          <p v-else class="chat-view__convs-empty">暂无会话，点击「新对话」创建</p>
         </nav>
       </aside>
 
       <!-- 中：消息流 + 底部输入 -->
       <section class="chat-view__main" aria-label="消息列表">
+        <!-- 当前会话知识库栏：新对话为可编辑多选，已有会话为只读标签 -->
+        <div class="chat-view__kb-bar">
+          <template v-if="activeConversationId === null">
+            <span class="chat-view__kb-bar-title">本次对话使用</span>
+            <template v-if="kbs.length">
+              <button
+                v-for="kb in kbs"
+                :key="`kb-pick-${kb.id}`"
+                type="button"
+                class="chat-view__kb-pick btn-press"
+                :class="{ 'chat-view__kb-pick--on': newConversationKbIds.includes(kb.id) }"
+                :aria-pressed="newConversationKbIds.includes(kb.id)"
+                @click="toggleNewConversationKb(kb.id)"
+              >
+                {{ kb.name }}
+              </button>
+            </template>
+            <span v-else class="chat-view__kb-bar-hint">知识库加载失败，请刷新页面</span>
+          </template>
+          <template v-else-if="activeConversationKbIds.length">
+            <span class="chat-view__kb-bar-title">会话知识库</span>
+            <div class="chat-view__active-kbs" readonly>
+              <span
+                v-for="(name, i) in activeConversationKbNames"
+                :key="`active-kb-${activeConversationId}-${i}`"
+                class="chat-view__kb-tag"
+              >
+                {{ name }}
+              </span>
+            </div>
+          </template>
+          <template v-else>
+            <span class="chat-view__kb-bar-title">会话知识库</span>
+            <span class="chat-view__kb-bar-hint">暂无知识库</span>
+          </template>
+        </div>
+
         <div ref="messagesEl" class="chat-view__messages">
           <div v-if="!messages.length && !streaming" class="chat-view__empty" v-motion="emptyMotion">
             <el-icon class="chat-view__empty-icon"><ChatDotRound /></el-icon>
             <h3>开始对话</h3>
-            <p>{{ selectedKbIds.length === 0 ? '请先选择知识库，再输入问题' : '输入问题，助手将检索知识库内容作答' }}</p>
+            <p v-if="activeConversationId === null">{{ isNewConversationKbReady ? '输入问题，助手将检索所选知识库内容作答' : '请选择本次对话使用的知识库' }}</p>
+            <p v-else>输入问题，助手将检索会话知识库内容作答</p>
           </div>
 
           <div
@@ -97,7 +120,7 @@
           >
             <!-- 助手头像：优先当前知识库封面，无封面用渐变缩略图 -->
             <div v-if="msg.role === 'assistant'" class="chat-view__avatar" :style="avatarStyle" aria-hidden="true">
-              <img v-if="hasCover" :src="selectedKb?.cover_url ?? ''" class="chat-view__avatar-img" alt="" />
+              <img v-if="hasCover" :src="activeCoverUrl" class="chat-view__avatar-img" alt="" />
               <el-icon v-else class="chat-view__avatar-icon"><Document /></el-icon>
             </div>
             <span class="chat-view__role">{{ msg.role === 'user' ? '你' : '助手' }}</span>
@@ -134,7 +157,7 @@
 
           <div v-if="streaming" class="chat-view__msg chat-view__msg--assistant">
             <div class="chat-view__avatar" :style="avatarStyle" aria-hidden="true">
-              <img v-if="hasCover" :src="selectedKb?.cover_url ?? ''" class="chat-view__avatar-img" alt="" />
+              <img v-if="hasCover" :src="activeCoverUrl" class="chat-view__avatar-img" alt="" />
               <el-icon v-else class="chat-view__avatar-icon"><Document /></el-icon>
             </div>
             <span class="chat-view__role">助手</span>
@@ -169,7 +192,7 @@
           <button
             type="submit"
             class="chat-view__send-btn btn-press"
-            :disabled="!question.trim() || loading"
+            :disabled="!canSend"
             :aria-label="loading ? '回答中' : '发送'"
           >
             <el-icon v-if="!loading" class="chat-view__send-icon"><Promotion /></el-icon>
@@ -253,7 +276,10 @@ const route = useRoute()
 
 /* ── 状态 ── */
 const kbs = ref<KbInfo[]>([])
-const selectedKbIds = ref<number[]>([])
+/** 已有会话绑定的只读知识库集合（切换会话时恢复，仅展示） */
+const activeConversationKbIds = ref<number[]>([])
+/** 新对话创建前用户选择的知识库集合；不参与历史会话列表过滤 */
+const newConversationKbIds = ref<number[]>([])
 const conversations = ref<ConversationInfo[]>([])
 const activeConversationId = ref<string | null>(null)
 const messages = ref<ChatMessageInfo[]>([])
@@ -291,14 +317,31 @@ function handleCitationClick(event: MouseEvent, msg: ChatMessageInfo) {
 }
 
 /* ── 派生状态 ── */
-/** 会话是否匹配当前选中的知识库集合：会话绑定的 KB 完全包含于选中集 */
-function convMatchesSelection(conv: ConversationInfo, kbIds: number[]): boolean {
-  const convKbIds = conv.kb_ids ?? (conv.kb_id != null ? [conv.kb_id] : [])
-  return kbIds.length > 0 && convKbIds.every((id) => kbIds.includes(id))
-}
+/** 全部历史会话：知识库选择不参与过滤，按最后更新时间倒序展示；
+ *  前端本地新建的会话 updated_at 尚为 null，视为最新排在最前 */
+const sortedConversations = computed(() =>
+  [...conversations.value].sort((a, b) => {
+    if (a.updated_at === null && b.updated_at === null) return 0
+    if (a.updated_at === null) return -1
+    if (b.updated_at === null) return 1
+    return b.updated_at.localeCompare(a.updated_at)
+  }),
+)
 
-const filteredConversations = computed(() =>
-  conversations.value.filter((c) => convMatchesSelection(c, selectedKbIds.value)),
+/** 新对话知识库选择是否满足发送条件（至少一个） */
+const isNewConversationKbReady = computed(() => newConversationKbIds.value.length > 0)
+
+/** 发送按钮可用性：有内容、非加载中，且新对话必须已选知识库 */
+const canSend = computed(
+  () =>
+    question.value.trim().length > 0 &&
+    !loading.value &&
+    (activeConversationId.value !== null || isNewConversationKbReady.value),
+)
+
+/** 已有会话绑定的知识库名（按 kb_ids 顺序） */
+const activeConversationKbNames = computed(() =>
+  activeConversationKbIds.value.map((id) => kbNameOf(id)),
 )
 
 /** 会话副标题：绑定的知识库名列表；超过 2 个显示前 2 个 + 总数 */
@@ -309,16 +352,7 @@ function convKbLabel(conv: ConversationInfo): string {
   return `${names.slice(0, 2).join(' / ')} 等${names.length}个`
 }
 
-// 多选时头像用第一个选中的 KB 封面
-const selectedKbName = computed(() =>
-  kbs.value.find((k) => selectedKbIds.value.includes(k.id))?.name ?? null,
-)
-
-const selectedKb = computed(() =>
-  kbs.value.find((k) => selectedKbIds.value.includes(k.id)) ?? null,
-)
-
-/* ── 助手头像：优先当前知识库封面图，无封面用渐变缩略图 ── */
+/* ── 助手头像：优先当前会话知识库封面图，无封面用渐变缩略图 ── */
 const THUMB_GRADIENTS = [
   'linear-gradient(135deg, rgba(0, 122, 255, 0.25), rgba(88, 86, 214, 0.15))',
   'linear-gradient(135deg, rgba(88, 86, 214, 0.25), rgba(0, 122, 255, 0.15))',
@@ -326,20 +360,31 @@ const THUMB_GRADIENTS = [
   'linear-gradient(135deg, rgba(52, 199, 89, 0.22), rgba(0, 122, 255, 0.12))',
 ]
 
+/** 当前会话第一个知识库的封面 URL（无则空串） */
+const activeCoverUrl = computed(() => {
+  const kb = kbs.value.find((k) => activeKbIdsForAvatar.value.includes(k.id))
+  return kb?.cover_url ?? ''
+})
+
 const avatarStyle = computed(() => {
-  // 多选时头像用第一个选中的 KB 封面
-  const kb = kbs.value.find((k) => selectedKbIds.value.includes(k.id))
+  // 头像取当前会话（已有会话或新对话选择）的第一个知识库封面
+  const kb = kbs.value.find((k) => activeKbIdsForAvatar.value.includes(k.id))
   if (kb?.cover_url) {
     return { overflow: 'hidden' }
   }
   return { background: THUMB_GRADIENTS[Math.abs((kb?.id ?? 0)) % THUMB_GRADIENTS.length] }
 })
 
-/** 当前 KB 是否有封面：有封面时头像不叠加文档图标（取第一个选中的 KB） */
+/** 当前 KB 是否有封面：有封面时头像不叠加文档图标（取当前会话第一个知识库） */
 const hasCover = computed(() => {
-  const kb = kbs.value.find((k) => selectedKbIds.value.includes(k.id))
+  const kb = kbs.value.find((k) => activeKbIdsForAvatar.value.includes(k.id))
   return !!kb?.cover_url
 })
+
+/** 头像取用的知识库集合：已有会话用其绑定集合，新对话用已选集合 */
+const activeKbIdsForAvatar = computed(() =>
+  activeConversationId.value !== null ? activeConversationKbIds.value : newConversationKbIds.value,
+)
 
 /* ── 动效（规范 4.4：内容进入弹簧 y 8px → 0 + 淡入） ── */
 const msgMotion = {
@@ -427,13 +472,16 @@ async function createNewConversation(kbIds: number[]): Promise<string | null> {
   const token = ++loadToken
   try {
     const conv = await createConversation(kbIds)
+    // 以服务端确认绑定的知识库为准（可能对 kb_ids 做规范化），参数仅作兜底
+    const boundKbIds =
+      Array.isArray(conv.kb_ids) && conv.kb_ids.length > 0 ? conv.kb_ids : kbIds
     conversations.value = [
       {
         id: conv.id,
-        kb_ids: kbIds,
-        kb_names: kbIds.map((id) => kbNameOf(id)),
-        kb_id: kbIds[0] ?? null,
-        kb_name: kbIds[0] != null ? kbNameOf(kbIds[0]) : undefined,
+        kb_ids: boundKbIds,
+        kb_names: boundKbIds.map((id) => kbNameOf(id)),
+        kb_id: boundKbIds[0] ?? null,
+        kb_name: boundKbIds[0] != null ? kbNameOf(boundKbIds[0]) : undefined,
         title: null,
         created_at: null,
         updated_at: null,
@@ -442,6 +490,7 @@ async function createNewConversation(kbIds: number[]): Promise<string | null> {
     ]
     if (token !== loadToken) return null
     activeConversationId.value = conv.id
+    activeConversationKbIds.value = [...boundKbIds]
     messages.value = []
     resetStream()
     await scrollToBottom()
@@ -456,6 +505,7 @@ async function switchConversation(conv: ConversationInfo) {
   if (conv.id === activeConversationId.value && messages.value.length) return
   const token = ++loadToken
   activeConversationId.value = conv.id
+  activeConversationKbIds.value = [...(conv.kb_ids ?? (conv.kb_id != null ? [conv.kb_id] : []))]
   messages.value = []
   resetStream()
   try {
@@ -468,25 +518,22 @@ async function switchConversation(conv: ConversationInfo) {
   }
 }
 
-/** 确保选中的知识库集合有可用会话：有历史则加载最近一条，否则新建 */
-async function ensureConversationForKb(kbIds: number[]) {
-  const existing = conversations.value
-    .filter((c) => convMatchesSelection(c, kbIds))
-    .sort((a, b) => (b.updated_at ?? '').localeCompare(a.updated_at ?? ''))
-  if (existing.length) {
-    await switchConversation(existing[0])
-  } else {
-    await createNewConversation(kbIds)
-  }
-}
-
 async function handleNewConversation() {
   if (loading.value) return
-  if (selectedKbIds.value.length === 0) {
-    ElMessage.warning('请先选择知识库')
-    return
-  }
-  await createNewConversation(selectedKbIds.value)
+  loadToken++ // 作废 in-flight 的历史消息请求
+  activeConversationId.value = null
+  activeConversationKbIds.value = []
+  newConversationKbIds.value = []
+  messages.value = []
+  resetStream()
+  question.value = ''
+}
+
+function toggleNewConversationKb(kbId: number) {
+  if (loading.value) return
+  newConversationKbIds.value = newConversationKbIds.value.includes(kbId)
+    ? newConversationKbIds.value.filter((id) => id !== kbId)
+    : [...newConversationKbIds.value, kbId]
 }
 
 async function handleDeleteConversation(conv: ConversationInfo) {
@@ -507,7 +554,9 @@ async function handleDeleteConversation(conv: ConversationInfo) {
   }
   conversations.value = conversations.value.filter((c) => c.id !== conv.id)
   if (conv.id === activeConversationId.value) {
+    loadToken++
     activeConversationId.value = null
+    activeConversationKbIds.value = []
     messages.value = []
     resetStream()
   }
@@ -538,18 +587,6 @@ async function commitRename(conv: ConversationInfo) {
   }
 }
 
-/* ── KB 切换：多选过滤会话列表；清空不新建，非空无匹配会话则新建 ── */
-async function handleKbChange(value: unknown) {
-  selectedKbIds.value = Array.isArray(value) ? value.map(Number) : []
-  activeConversationId.value = null
-  messages.value = []
-  resetStream()
-  question.value = ''
-  if (selectedKbIds.value.length > 0) {
-    await ensureConversationForKb(selectedKbIds.value)
-  }
-}
-
 /* ── 发送与流式 ── */
 function pushAssistantError(cid: string | null, text: string) {
   if (!cid || activeConversationId.value !== cid) return
@@ -565,7 +602,7 @@ function pushAssistantError(cid: string | null, text: string) {
 async function handleSend() {
   const q = question.value.trim()
   if (!q || loading.value) return
-  if (selectedKbIds.value.length === 0) {
+  if (activeConversationId.value === null && newConversationKbIds.value.length === 0) {
     ElMessage.warning('请先选择知识库')
     return
   }
@@ -573,7 +610,7 @@ async function handleSend() {
   loading.value = true
   try {
     if (!activeConversationId.value) {
-      const id = await createNewConversation(selectedKbIds.value)
+      const id = await createNewConversation(newConversationKbIds.value)
       if (id === null) return
     }
     const cid = activeConversationId.value
@@ -676,7 +713,7 @@ async function streamAnswer(resp: Response, cid: string) {
   streamingRefs.value = []
 }
 
-/* ── query 参数：员工从知识库列表点卡跳入（?kb={id}），直接可对话 ── */
+/* ── query 参数：员工从知识库列表点卡跳入（?kb={id}），直接进入绑定该库的新对话 ── */
 async function applyKbQuery() {
   const raw = route.query.kb
   const id = typeof raw === 'string' ? Number(raw) : NaN
@@ -685,8 +722,12 @@ async function applyKbQuery() {
     ElMessage.warning('知识库不存在或无权访问')
     return
   }
-  selectedKbIds.value = [id]
-  await ensureConversationForKb([id])
+  loadToken++
+  activeConversationId.value = null
+  activeConversationKbIds.value = []
+  newConversationKbIds.value = [id]
+  messages.value = []
+  resetStream()
 }
 
 onMounted(async () => {
@@ -744,22 +785,6 @@ onMounted(async () => {
 .chat-view__side-plus {
   margin-right: 6px;
   font-size: 16px;
-}
-
-.chat-view__kb-select {
-  width: 100%;
-  margin-bottom: 16px;
-  padding: 0 4px;
-}
-
-.chat-view__kb-select :deep(.el-select__wrapper) {
-  border-radius: var(--radius-lg);
-  background: var(--bg-subtle);
-  box-shadow: 0 0 0 1px var(--border-strong) inset;
-}
-
-.chat-view__kb-select :deep(.el-select__wrapper.is-focused) {
-  box-shadow: 0 0 0 1px var(--accent-blue) inset;
 }
 
 .chat-view__convs {
@@ -876,6 +901,64 @@ onMounted(async () => {
   color: var(--text-tertiary);
   padding: 8px 4px;
   line-height: 1.5;
+}
+
+/* ═══════════ 当前会话知识库栏（新对话多选 / 已有会话只读标签） ═══════════ */
+.chat-view__kb-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 0 28px;
+  margin-top: 20px;
+  min-height: 26px;
+}
+
+.chat-view__kb-bar-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  letter-spacing: 0.03em;
+  margin-right: 2px;
+}
+
+.chat-view__kb-pick {
+  padding: 4px 12px;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.chat-view__kb-pick--on {
+  border-color: color-mix(in srgb, var(--accent-blue) 55%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+.chat-view__kb-bar-hint {
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.chat-view__active-kbs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.chat-view__kb-tag {
+  padding: 4px 12px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-full);
+  background: var(--bg-subtle);
+  color: var(--text-secondary);
+  font-size: 12px;
+  font-weight: 500;
 }
 
 /* ═══════════ 中栏 ═══════════ */
