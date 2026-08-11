@@ -197,7 +197,7 @@
             class="chat-view__drawer-ref"
           >
             <div class="chat-view__drawer-ref-head">
-              <span class="chat-view__drawer-ref-idx">[{{ activeRefStart + j + 1 }}]</span>
+              <span class="chat-view__drawer-ref-idx">{{ activeRefStart + j + 1 }}</span>
               <el-icon class="chat-view__drawer-ref-icon"><Document /></el-icon>
               <span class="chat-view__drawer-ref-title">{{ ref.title || '未知来源' }}</span>
               <span v-if="ref.page" class="chat-view__drawer-ref-tag">第 {{ ref.page }} 页</span>

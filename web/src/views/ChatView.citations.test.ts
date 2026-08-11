@@ -82,7 +82,7 @@ describe('ChatView citations', () => {
 
     const drawerRefs = wrapper.findAll('.chat-view__drawer-ref')
     expect(drawerRefs).toHaveLength(1)
-    expect(drawerRefs[0].text()).toContain('[2]')
+    expect(drawerRefs[0].find('.chat-view__drawer-ref-idx').text()).toBe('2')
     expect(drawerRefs[0].text()).toContain('Source Two')
     expect(wrapper.text()).not.toContain('Source Onefirst snippet')
   })

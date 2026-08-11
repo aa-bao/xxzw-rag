@@ -255,7 +255,7 @@ md.core.ruler.after('inline', 'chat_citations', (state) => {
 
 md.renderer.rules.chat_citation = (tokens, index) => {
   const referenceIndex = Number(tokens[index].meta.referenceIndex)
-  return `<button type="button" class="chat-view__inline-cite" data-reference-index="${referenceIndex}" aria-label="查看资料来源 ${referenceIndex + 1}">[${referenceIndex + 1}]</button>`
+  return `<button type="button" class="chat-view__inline-cite" data-reference-index="${referenceIndex}" aria-label="查看资料来源 ${referenceIndex + 1}">${referenceIndex + 1}</button>`
 }
 
 export function renderChatMarkdown(content: string, referenceCount: number): string {
