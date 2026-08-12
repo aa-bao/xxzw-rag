@@ -871,17 +871,17 @@ const wizardDocId = ref<number | null>(null)
 
 /** 向导确认入库成功：追加文档并轮询新状态（awaiting_mapping → ... → done）。
  *  继续配置的文档已在列表中，此时只更新行而非追加，避免重复 id 破坏表格全选 */
-function handleWizardIngested(payload: { docId: number; jobId: number }) {
+function handleWizardIngested(payload: { docId: number; jobId: number; name?: string; fileSizeBytes?: number | null }) {
   // 关闭职责已移交向导组件（全部成功 emit('close')；部分失败留在向导内重试）
   wizardDocId.value = payload.docId
   const doc: DocInfo = {
     id: payload.docId,
-    title: 'JSON 文档',
+    title: payload.name || 'JSON 文档',
     source: 'JSON 映射',
     source_type: 'file',
     status: 'awaiting_mapping',
     chunk_count: 0,
-    file_size_bytes: null,
+    file_size_bytes: payload.fileSizeBytes ?? null,
     error_message: null,
     created_at: new Date().toISOString(),
     ingested_at: null,

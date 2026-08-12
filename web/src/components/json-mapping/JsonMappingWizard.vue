@@ -156,7 +156,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   (e: 'close'): void
-  (e: 'ingested', value: { docId: number; jobId: number }): void
+  (e: 'ingested', value: { docId: number; jobId: number; name?: string; fileSizeBytes?: number | null }): void
 }>()
 
 const STEP_LABELS = ['上传文件', '结构检测', '字段映射', '关系与层级', '真实预览', '确认入库']
@@ -338,6 +338,7 @@ async function startBatchUpload() {
         okEntries.push({
           docId: result.doc_id,
           name: entry.file.name,
+          fileSizeBytes: entry.file.size,
           status: 'pending',
           jobId: null,
           error: null,
@@ -495,9 +496,15 @@ async function handleConfirmIngest() {
     const created = await createMappingTemplateVersion({ template_id, name, mapping: s.mapping })
     busy.value = null
     const results = await hook.confirmIngest(created.mapping_version_id)
-    // 逐条通知文档列表（追加文档行并轮询状态）
+    // 逐条通知文档列表（追加文档行并轮询状态）；带真实文件名与大小供列表展示
     for (const r of results) {
-      emit('ingested', { docId: r.doc_id, jobId: r.job_id })
+      const entry = batchDocs.value?.find((e) => e.docId === r.doc_id)
+      emit('ingested', {
+        docId: r.doc_id,
+        jobId: r.job_id,
+        name: entry?.name,
+        fileSizeBytes: entry?.fileSizeBytes ?? null,
+      })
     }
     const failedCount = batchFailedCount.value
     if (failedCount > 0) {

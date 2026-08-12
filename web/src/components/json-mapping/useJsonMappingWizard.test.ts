@@ -73,6 +73,7 @@ function makeBatchEntries(docIds: number[]): BatchDocEntry[] {
   return docIds.map((docId) => ({
     docId,
     name: `${docId}.json`,
+    fileSizeBytes: null,
     status: 'pending',
     jobId: null,
     error: null,

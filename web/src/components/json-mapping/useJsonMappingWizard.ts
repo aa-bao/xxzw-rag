@@ -23,6 +23,7 @@ export type BatchIngestStatus = 'pending' | 'ingested' | 'failed'
 export interface BatchDocEntry {
   docId: number
   name: string
+  fileSizeBytes: number | null
   status: BatchIngestStatus
   jobId: number | null
   error: string | null
@@ -243,7 +244,7 @@ export function useJsonMappingWizard(kbId: number) {
     }
     const targets: BatchDocEntry[] =
       batchDocs.value ?? [
-        { docId: s.docId, name: '', status: 'pending', jobId: null, error: null },
+        { docId: s.docId, name: '', fileSizeBytes: null, status: 'pending', jobId: null, error: null },
       ]
     const results = await run('ingest', async () => {
       const succeeded: IngestResult[] = []

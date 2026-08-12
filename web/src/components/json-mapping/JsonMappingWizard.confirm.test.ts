@@ -82,7 +82,7 @@ const { startJsonIngest } = await import('../../api/structured')
 const startJsonIngestMock = vi.mocked(startJsonIngest)
 
 function batchEntry(docId: number, name: string, status: BatchDocEntry['status'], jobId: number | null = null, error: string | null = null): BatchDocEntry {
-  return { docId, name, status, jobId, error }
+  return { docId, name, fileSizeBytes: null, status, jobId, error }
 }
 
 /** 已挂载的 wrapper：测试间卸载并清理 body，避免残留对话框干扰后续用例 */
@@ -164,8 +164,8 @@ describe('JsonMappingWizard confirm action', () => {
 
     const ingested = wrapper.emitted('ingested')
     expect(ingested).toHaveLength(2)
-    expect(ingested?.[0]?.[0]).toEqual({ docId: 11, jobId: 110 })
-    expect(ingested?.[1]?.[0]).toEqual({ docId: 12, jobId: 120 })
+    expect(ingested?.[0]?.[0]).toEqual({ docId: 11, jobId: 110, name: 'a.json', fileSizeBytes: null })
+    expect(ingested?.[1]?.[0]).toEqual({ docId: 12, jobId: 120, name: 'b.json', fileSizeBytes: null })
   })
 
   it('emits close when the whole batch succeeds', async () => {

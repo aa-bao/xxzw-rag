@@ -359,7 +359,7 @@ async def get_doc_raw(
         raise AppError("DOC_FILE_MISSING", "原始文件不存在", status_code=404)
 
     ext = path.suffix.lower()
-    if ext in (".txt", ".md", ".markdown"):
+    if ext in (".txt", ".md", ".markdown", ".json", ".jsonl"):
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:
