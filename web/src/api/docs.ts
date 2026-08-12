@@ -54,7 +54,8 @@ export interface DocInfo {
 
 export interface UploadDocResult {
   doc_id: number
-  job_id: number
+  /** 普通文档立即创建任务；JSON/JSONL 等待映射，因此没有 job_id。 */
+  job_id?: number
   status: string
 }
 
@@ -105,10 +106,12 @@ const DISPLAY_MAP: Record<string, DocDisplayStatus> = {
   deleting: 'deleting',
 }
 
-/** 非终态（需要继续轮询） */
+/** 非终态（需要继续轮询）。
+ *  awaiting_mapping 不在此列：该状态没有进行中的入库 job，状态不会自动变化，
+ *  轮询只会周期性替换 docs 数组导致表格勾选状态被重置；入库后由向导重新 pollDoc。 */
 export function isNonterminal(status: DocDisplayStatus | string): boolean {
   const s = normalizeDocStatus(status)
-  return s === 'pending' || s === 'running' || s === 'awaiting_mapping'
+  return s === 'pending' || s === 'running'
 }
 
 export function normalizeDocStatus(status: string | null | undefined): DocDisplayStatus {
