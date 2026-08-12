@@ -76,7 +76,48 @@
               {{ chunk.score.toFixed(4) }}
             </span>
           </div>
-          <p class="chunk-card__content">{{ chunk.content }}</p>
+          <div class="chunk-card__toolbar">
+            <span class="chunk-card__index">切片 {{ (page - 1) * PAGE_SIZE + i + 1 }}</span>
+            <el-button
+              v-if="editingChunkId !== chunk.chunk_id"
+              text
+              class="chunk-card__edit"
+              :icon="EditPen"
+              :disabled="editingChunkId !== null"
+              :aria-label="`编辑切片 ${i + 1}`"
+              @click="startEdit(chunk)"
+            >
+              编辑
+            </el-button>
+          </div>
+          <div v-if="editingChunkId === chunk.chunk_id" class="chunk-card__editor">
+            <el-input
+              v-model="draftContent"
+              type="textarea"
+              resize="vertical"
+              :autosize="{ minRows: 5, maxRows: 18 }"
+              :maxlength="MAX_CHUNK_CHARS"
+              show-word-limit
+              aria-label="切片内容"
+              @keydown.ctrl.enter.prevent="saveChunk(chunk)"
+              @keydown.esc.prevent="cancelEdit"
+            />
+            <p class="chunk-card__editor-note">保存后会重新生成该切片的向量。Ctrl + Enter 保存，Esc 取消。</p>
+            <p v-if="editError" class="chunk-card__editor-error" role="alert">{{ editError }}</p>
+            <div class="chunk-card__editor-actions">
+              <el-button :icon="Close" :disabled="savingChunkId !== null" @click="cancelEdit">取消</el-button>
+              <el-button
+                type="primary"
+                :icon="Check"
+                :loading="savingChunkId === chunk.chunk_id"
+                :disabled="!canSaveChunk(chunk)"
+                @click="saveChunk(chunk)"
+              >
+                保存修改
+              </el-button>
+            </div>
+          </div>
+          <p v-else class="chunk-card__content">{{ chunk.content }}</p>
         </article>
       </div>
 
@@ -98,14 +139,16 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ArrowLeft, Collection, Document, Loading, Search, Tickets, Warning } from '@element-plus/icons-vue'
+import { ElMessage } from 'element-plus'
+import { ArrowLeft, Check, Close, Collection, Document, EditPen, Loading, Search, Tickets, Warning } from '@element-plus/icons-vue'
 import { getKb, type KbInfo } from '../api/kb'
-import { listChunks, type ChunkInfo } from '../api/retrieval'
+import { listChunks, updateChunk, type ChunkInfo } from '../api/retrieval'
 
 const route = useRoute()
 const router = useRouter()
 
 const PAGE_SIZE = 10
+const MAX_CHUNK_CHARS = 500
 
 /* ── 路由参数：kbId 与 docId（兼容数组形态） ── */
 const kbId = computed(() => {
@@ -188,10 +231,58 @@ function handleSearch() {
   void loadChunks()
 }
 
+const editingChunkId = ref<string | null>(null)
+const savingChunkId = ref<string | null>(null)
+const draftContent = ref('')
+const editError = ref('')
+
+function startEdit(chunk: ChunkInfo) {
+  editingChunkId.value = chunk.chunk_id
+  draftContent.value = chunk.content
+  editError.value = ''
+}
+
+function cancelEdit() {
+  if (savingChunkId.value !== null) return
+  editingChunkId.value = null
+  draftContent.value = ''
+  editError.value = ''
+}
+
+function canSaveChunk(chunk: ChunkInfo): boolean {
+  const content = draftContent.value.trim()
+  return (
+    savingChunkId.value === null
+    && content.length > 0
+    && content.length <= MAX_CHUNK_CHARS
+    && content !== chunk.content
+  )
+}
+
+async function saveChunk(chunk: ChunkInfo) {
+  const kb = kbId.value
+  const doc = docId.value
+  if (kb === null || doc === null || !canSaveChunk(chunk)) return
+  savingChunkId.value = chunk.chunk_id
+  editError.value = ''
+  try {
+    const updated = await updateChunk(kb, doc, chunk.chunk_id, draftContent.value.trim())
+    chunk.content = updated.content
+    editingChunkId.value = null
+    draftContent.value = ''
+    ElMessage.success('切片已更新，向量已重新生成')
+  } catch (err) {
+    editError.value = getErrorMessage(err)
+  } finally {
+    savingChunkId.value = null
+  }
+}
+
 /* ── docId 变化时重置并重新加载（docId 不在 Layout 的 RouterView key 内） ── */
 watch(docId, () => {
   page.value = 1
   keyword.value = ''
+  cancelEdit()
   void loadChunks()
 })
 
@@ -211,8 +302,11 @@ function goBack() {
 
 /* ── 错误信息提取（api client 抛出的响应体） ── */
 function getErrorMessage(err: unknown): string {
-  if (err && typeof err === 'object' && 'message' in err) {
-    const message = (err as { message?: unknown }).message
+  if (err && typeof err === 'object') {
+    const response = err as { error?: { message?: unknown; code?: unknown }; message?: unknown }
+    const nested = response.error?.message ?? response.error?.code
+    if (typeof nested === 'string' && nested) return nested
+    const message = response.message
     if (typeof message === 'string' && message) return message
   }
   if (err instanceof Error) return err.message
@@ -411,6 +505,60 @@ const hoverMotion = {
   letter-spacing: 0.03em;
 }
 
+.chunk-card__toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  margin-bottom: 6px;
+}
+
+.chunk-card__index {
+  color: var(--text-tertiary);
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+}
+
+.chunk-card__edit {
+  margin-right: -8px;
+  color: var(--accent-blue);
+  font-weight: 600;
+}
+
+.chunk-card__editor {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.chunk-card__editor :deep(.el-textarea__inner) {
+  padding: 12px 14px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.65;
+}
+
+.chunk-card__editor-note,
+.chunk-card__editor-error {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.chunk-card__editor-note {
+  color: var(--text-secondary);
+}
+
+.chunk-card__editor-error {
+  color: var(--el-color-danger);
+}
+
+.chunk-card__editor-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+
 /* 分块内容：多行截断 */
 .chunk-card__content {
   font-size: 13px;
@@ -456,5 +604,24 @@ const hoverMotion = {
 
 .kb-chunks__state-btn {
   margin-top: 12px;
+}
+
+@media (max-width: 720px) {
+  .kb-chunks__bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .kb-chunks__search {
+    width: 100%;
+  }
+
+  .chunk-card {
+    padding: 14px 16px;
+  }
+
+  .chunk-card__editor-actions :deep(.el-button) {
+    flex: 1;
+  }
 }
 </style>

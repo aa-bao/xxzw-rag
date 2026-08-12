@@ -181,6 +181,45 @@ class ChromaRetrieval(RetrievalModule):
             )
         return items
 
+    async def update_doc_chunk(
+        self,
+        collection_name: str,
+        doc_id: int,
+        chunk_id: str,
+        content: str,
+    ) -> dict[str, Any] | None:
+        """Update one owned document chunk and regenerate its embedding."""
+        collection = self._get_collection(collection_name, create=False)
+        if collection is None:
+            return None
+        result = collection.get(ids=[chunk_id], include=["metadatas"])
+        ids = result.get("ids") or []
+        metadatas = result.get("metadatas") or []
+        if not ids:
+            return None
+        metadata = metadatas[0] if metadatas and metadatas[0] else {}
+        if _as_int(metadata.get("doc_id")) != doc_id:
+            return None
+        if self._relay is None:
+            raise RuntimeError("Embedding service is unavailable")
+        embeddings = await self._relay.embed([content])
+        collection.update(
+            ids=[chunk_id],
+            documents=[content],
+            embeddings=embeddings,
+        )
+        return {
+            "chunk_id": chunk_id,
+            "content": content,
+            "doc_id": doc_id,
+            "page": (
+                _as_int(metadata["page"])
+                if metadata.get("page") is not None
+                else None
+            ),
+            "score": None,
+        }
+
     async def retrieve(
         self,
         query: str,

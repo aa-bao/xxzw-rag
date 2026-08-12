@@ -4,6 +4,7 @@ import hashlib
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Query, Request, UploadFile
+from pydantic import BaseModel, Field
 from sqlalchemy import delete as sa_delete
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -33,6 +34,10 @@ _factory.register(
 
 # 软删文档状态：标记 deleting 后由异步 delete job 清理文件与向量
 _DOC_DELETE_STATUS = "deleting"
+
+
+class UpdateChunkRequest(BaseModel):
+    content: str = Field(min_length=1, max_length=500)
 
 
 async def _get_kb_for_docs(db: AsyncSession, kb_id: int) -> KnowledgeBase:
@@ -300,6 +305,40 @@ async def list_doc_chunks(
         kw = keyword.lower()
         items = [it for it in items if kw in (it["content"] or "").lower()]
     return {"success": True, "data": {"total": len(items), "items": items}}
+
+
+@router.put("/kb/{kb_id}/docs/{doc_id}/chunks/{chunk_id}")
+async def update_doc_chunk(
+    kb_id: int,
+    doc_id: int,
+    chunk_id: str,
+    body: UpdateChunkRequest,
+    request: Request,
+    user_id: int = Depends(require_admin),
+    db: AsyncSession = Depends(_session_factory),
+) -> dict[str, object]:
+    """Update one chunk and regenerate its vector with the active embedding model."""
+    kb = await _get_kb_for_docs(db, kb_id)
+    await _get_doc(db, kb_id, doc_id)
+    content = body.content.strip()
+    if not content:
+        raise AppError("CHUNK_CONTENT_REQUIRED", "切片内容不能为空")
+    chroma = getattr(request.app.state, "ingest_chroma", None)
+    if chroma is None:
+        raise AppError("CHROMA_UNAVAILABLE", "向量库暂不可用", status_code=503)
+    collection_name = kb.active_collection or f"kb_{kb_id}_v1"
+    try:
+        updated = await chroma.update_doc_chunk(
+            collection_name,
+            doc_id,
+            chunk_id,
+            content,
+        )
+    except Exception as exc:
+        raise AppError("CHUNK_UPDATE_FAILED", f"切片保存失败: {exc}", status_code=502) from exc
+    if updated is None:
+        raise AppError("CHUNK_NOT_FOUND", "切片不存在或不属于该文档", status_code=404)
+    return {"success": True, "data": updated}
 
 
 @router.get("/kb/{kb_id}/docs/{doc_id}/raw")

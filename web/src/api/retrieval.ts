@@ -47,3 +47,17 @@ export async function listChunks(
   const resp = await api.get<ChunkPage>(`/kb/${kbId}/docs/${docId}/chunks${qs ? `?${qs}` : ''}`)
   return resp.data
 }
+
+export async function updateChunk(
+  kbId: number,
+  docId: number,
+  chunkId: string,
+  content: string,
+): Promise<ChunkInfo> {
+  const encodedChunkId = encodeURIComponent(chunkId)
+  const resp = await api.put<ChunkInfo>(
+    `/kb/${kbId}/docs/${docId}/chunks/${encodedChunkId}`,
+    { content },
+  )
+  return resp.data
+}
