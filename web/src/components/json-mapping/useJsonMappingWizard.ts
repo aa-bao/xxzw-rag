@@ -1,6 +1,8 @@
 import { computed, ref } from 'vue'
 import type {
+  IngestResult,
   MappingDefinition,
+  PreviewResponse,
   PreviewRow,
   SourceProfile,
 } from '../../types/structured'
@@ -16,8 +18,18 @@ import { profileJson, previewJson, startJsonIngest } from '../../api/structured'
 
 export type WizardStep = 'upload' | 'structure' | 'fields' | 'relations' | 'preview' | 'confirm'
 
+export type BatchIngestStatus = 'pending' | 'ingested' | 'failed'
+
+export interface BatchDocEntry {
+  docId: number
+  name: string
+  status: BatchIngestStatus
+  jobId: number | null
+  error: string | null
+}
+
 export type WizardState =
-  | { step: 'upload'; file: File | null }
+  | { step: 'upload'; files: File[] }
   | { step: 'structure'; docId: number; profile: SourceProfile }
   | { step: 'fields'; docId: number; profile: SourceProfile; mapping: MappingDefinition }
   | { step: 'relations'; docId: number; mapping: MappingDefinition }
@@ -60,7 +72,7 @@ export function mappingHash(mapping: MappingDefinition): string {
 }
 
 export function useJsonMappingWizard(kbId: number) {
-  const state = ref<WizardState>({ step: 'upload', file: null })
+  const state = ref<WizardState>({ step: 'upload', files: [] })
   const busy = ref<BusyOperation | null>(null)
   const ingested = ref<{ docId: number; jobId: number } | null>(null)
   const lastError = ref<string | null>(null)
@@ -70,6 +82,8 @@ export function useJsonMappingWizard(kbId: number) {
   let resumeDocId: number | null = null
   /** 当前 preview 行对应的映射哈希：映射变更后未重新预览则确认失效 */
   const previewHash = ref<string | null>(null)
+  /** 批量导入批次：confirm 步骤逐个入库；null 表示单文档模式 */
+  const batchDocs = ref<BatchDocEntry[] | null>(null)
 
   /** 当前步骤编号（1..6） */
   const stepNumberValue = computed(() => stepNumber(state.value.step))
@@ -93,19 +107,25 @@ export function useJsonMappingWizard(kbId: number) {
     }
   }
 
-  function setFile(file: File | null) {
+  function setFiles(files: File[]) {
     if (busy.value !== null) return
     resumeDocId = null
-    state.value = { step: 'upload', file }
+    state.value = { step: 'upload', files }
   }
 
-  /** 1→2：探查结构。支持从文档列表「继续配置」进入（file 为 null 但 docId 已存在） */
+  /** 预置批量导入批次（批量模式；单文件模式保持 null） */
+  function setBatchDocs(entries: BatchDocEntry[]): void {
+    if (busy.value !== null) return
+    batchDocs.value = entries
+  }
+
+  /** 1→2：探查结构。支持从文档列表「继续配置」进入（无文件但 docId 已存在） */
   async function profile(docId: number): Promise<SourceProfile> {
     const s = state.value
     if (s.step !== 'upload') {
       throw new Error(`当前步骤（${s.step}）不能开始结构探查`)
     }
-    if (s.file === null && resumeDocId !== docId) {
+    if (s.files.length === 0 && resumeDocId !== docId) {
       throw new Error('请先选择要上传的 JSON 文件')
     }
     const result = await run('profile', () => api.profileJson(kbId, docId))
@@ -132,7 +152,7 @@ export function useJsonMappingWizard(kbId: number) {
   }
 
   /** 4→5：请求后端真实预览 */
-  async function preview(mapping: MappingDefinition, limit?: number): Promise<void> {
+  async function preview(mapping: MappingDefinition, limit?: number): Promise<PreviewResponse> {
     const s = state.value
     if (s.step !== 'relations') {
       throw new Error(`当前步骤（${s.step}）不能请求预览：请先完成结构探查与映射编辑`)
@@ -140,6 +160,7 @@ export function useJsonMappingWizard(kbId: number) {
     const resp = await run('preview', () => api.previewJson(kbId, s.docId, mapping, limit))
     previewHash.value = mappingHash(mapping)
     state.value = { step: 'preview', docId: s.docId, mapping, rows: resp.rows }
+    return resp
   }
 
   /** 预览中映射被编辑：整体替换（原地刷新）；映射变更后确认失效直至重新预览 */
@@ -187,7 +208,7 @@ export function useJsonMappingWizard(kbId: number) {
     const s = state.value
     switch (s.step) {
       case 'structure':
-        state.value = { step: 'upload', file: null }
+        state.value = { step: 'upload', files: [] }
         return
       case 'fields':
         state.value = { step: 'structure', docId: s.docId, profile: s.profile }
@@ -214,27 +235,57 @@ export function useJsonMappingWizard(kbId: number) {
     }
   }
 
-  /** 6→终态：调用 ingest；成功后记录 doc_id/job_id 并重置 transient 数据 */
-  async function confirmIngest(mappingVersionId: number): Promise<void> {
+  /** 6→终态：逐个调用 ingest；单条失败不阻断批次，全部成功才重置 transient 数据 */
+  async function confirmIngest(mappingVersionId: number): Promise<IngestResult[]> {
     const s = state.value
     if (s.step !== 'confirm') {
       throw new Error(`当前步骤（${s.step}）不能开始入库`)
     }
-    const result = await run('ingest', () =>
-      api.startJsonIngest(kbId, { doc_id: s.docId, mapping_version_id: mappingVersionId }),
-    )
-    ingested.value = { docId: result.doc_id, jobId: result.job_id }
-    profileCache = null
-    previewHash.value = null
-    resumeDocId = null
-    // 重置 transient 数据，回到初始 upload 步骤
-    state.value = { step: 'upload', file: null }
+    const targets: BatchDocEntry[] =
+      batchDocs.value ?? [
+        { docId: s.docId, name: '', status: 'pending', jobId: null, error: null },
+      ]
+    const results = await run('ingest', async () => {
+      const succeeded: IngestResult[] = []
+      for (const entry of targets) {
+        if (entry.status === 'ingested') continue
+        try {
+          const result = await api.startJsonIngest(kbId, {
+            doc_id: entry.docId,
+            mapping_version_id: mappingVersionId,
+          })
+          entry.status = 'ingested'
+          entry.jobId = result.job_id
+          entry.error = null
+          succeeded.push(result)
+        } catch (err) {
+          entry.status = 'failed'
+          entry.error = err instanceof Error ? err.message : String(err)
+        }
+      }
+      return succeeded
+    })
+
+    if (results.length > 0) {
+      const last = results[results.length - 1]
+      ingested.value = { docId: last.doc_id, jobId: last.job_id }
+    }
+
+    if (targets.every((entry) => entry.status === 'ingested')) {
+      profileCache = null
+      previewHash.value = null
+      resumeDocId = null
+      batchDocs.value = null
+      // 重置 transient 数据，回到初始 upload 步骤
+      state.value = { step: 'upload', files: [] }
+    }
+    return results
   }
 
   /** 预置要配置的文档：进入 upload 步骤并允许直接探查已上传文档 */
   function setDocForResume(docId: number): void {
     if (busy.value !== null) return
-    state.value = { step: 'upload', file: null }
+    state.value = { step: 'upload', files: [] }
     resumeDocId = docId
   }
 
@@ -246,7 +297,9 @@ export function useJsonMappingWizard(kbId: number) {
     lastError,
     stepNumber: stepNumberValue,
     api,
-    setFile,
+    setFiles,
+    setBatchDocs,
+    batchDocs,
     setDocForResume,
     profile,
     selectCandidate,

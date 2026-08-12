@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import type { SourceProfile, MappingDefinition, PreviewRow } from '../../types/structured'
 import { useJsonMappingWizard } from './useJsonMappingWizard'
+import type { BatchDocEntry } from './useJsonMappingWizard'
 
 const KB_ID = 7
 
@@ -68,6 +69,20 @@ function makeRows(): PreviewRow[] {
   ]
 }
 
+function makeBatchEntries(docIds: number[]): BatchDocEntry[] {
+  return docIds.map((docId) => ({
+    docId,
+    name: `${docId}.json`,
+    status: 'pending',
+    jobId: null,
+    error: null,
+  }))
+}
+
+function ingestResult(docId: number, jobId: number) {
+  return { doc_id: docId, job_id: jobId, mapping_version_id: 3, status: 'queued' }
+}
+
 describe('useJsonMappingWizard', () => {
   let hook: ReturnType<typeof useJsonMappingWizard>
 
@@ -76,18 +91,51 @@ describe('useJsonMappingWizard', () => {
     hook = useJsonMappingWizard(KB_ID)
   })
 
-  it('starts at the upload step with no file', () => {
+  /** 从 upload 走到 confirm 步骤（单文档流程，docId 对应已上传文档） */
+  async function reachConfirm(docId: number): Promise<void> {
+    const profile = makeProfile({ doc_id: docId })
+    const mapping = makeMapping()
+    vi.spyOn(hook.api, 'profileJson').mockResolvedValue(profile)
+    hook.setFiles([new File(['{}'], `${docId}.json`)])
+    await hook.profile(docId)
+    hook.selectCandidate(profile, mapping)
+    hook.next() // -> fields
+    vi.spyOn(hook.api, 'previewJson').mockResolvedValue({
+      rows: makeRows(),
+      warnings: [],
+      total_rows: 1,
+      limit: null,
+    })
+    await hook.preview(mapping)
+    hook.next() // -> confirm
+  }
+
+  it('starts at the upload step with no files', () => {
     expect(hook.state.value.step).toBe('upload')
     expect(hook.busy.value).toBeNull()
     if (hook.state.value.step === 'upload') {
-      expect(hook.state.value.file).toBeNull()
+      expect(hook.state.value.files).toHaveLength(0)
+    }
+  })
+
+  it('stores the selected files in the upload step', () => {
+    const f1 = new File(['{}'], 'a.json')
+    const f2 = new File(['{}'], 'b.json')
+
+    hook.setFiles([f1, f2])
+
+    expect(hook.state.value.step).toBe('upload')
+    if (hook.state.value.step === 'upload') {
+      expect(hook.state.value.files).toHaveLength(2)
+      expect(hook.state.value.files[0]).toBe(f1)
+      expect(hook.state.value.files[1]).toBe(f2)
     }
   })
 
   it('advances to structure after a successful profile', async () => {
     const profile = makeProfile()
     const profileJsonSpy = vi.spyOn(hook.api, 'profileJson').mockResolvedValue(profile)
-    hook.setFile(new File(['{}'], 'posts.json'))
+    hook.setFiles([new File(['{}'], 'posts.json')])
 
     await hook.profile(42)
 
@@ -105,7 +153,7 @@ describe('useJsonMappingWizard', () => {
     vi.spyOn(hook.api, 'profileJson').mockImplementation(
       () => new Promise((resolve) => (release = resolve)),
     )
-    hook.setFile(new File(['{}'], 'posts.json'))
+    hook.setFiles([new File(['{}'], 'posts.json')])
 
     const pending = hook.profile(42)
     expect(hook.busy.value).toBe('profile')
@@ -147,7 +195,7 @@ describe('useJsonMappingWizard', () => {
   it('invalidates confirmation when a breaking schema change is detected', async () => {
     const profile = makeProfile()
     vi.spyOn(hook.api, 'profileJson').mockResolvedValue(profile)
-    hook.setFile(new File(['{}'], 'posts.json'))
+    hook.setFiles([new File(['{}'], 'posts.json')])
     await hook.profile(42)
 
     const mapping = makeMapping()
@@ -202,7 +250,7 @@ describe('useJsonMappingWizard', () => {
   it('records doc_id and job_id on ingest success and resets transient preview rows', async () => {
     const profile = makeProfile()
     vi.spyOn(hook.api, 'profileJson').mockResolvedValue(profile)
-    hook.setFile(new File(['{}'], 'posts.json'))
+    hook.setFiles([new File(['{}'], 'posts.json')])
     await hook.profile(42)
 
     const mapping = makeMapping()
@@ -232,8 +280,9 @@ describe('useJsonMappingWizard', () => {
     // transient 数据重置：回到 upload，无文件、无预览行
     expect(hook.state.value.step).toBe('upload')
     if (hook.state.value.step === 'upload') {
-      expect(hook.state.value.file).toBeNull()
+      expect(hook.state.value.files).toHaveLength(0)
     }
+    expect(hook.batchDocs.value).toBeNull()
   })
 
   it('prevents double submits while an operation is running', async () => {
@@ -242,7 +291,7 @@ describe('useJsonMappingWizard', () => {
     vi.spyOn(hook.api, 'profileJson').mockImplementation(
       () => new Promise((resolve) => (release = resolve)),
     )
-    hook.setFile(new File(['{}'], 'posts.json'))
+    hook.setFiles([new File(['{}'], 'posts.json')])
 
     const first = hook.profile(42)
     await expect(hook.profile(42)).rejects.toThrow(/busy|进行中/)
@@ -250,7 +299,7 @@ describe('useJsonMappingWizard', () => {
     release(profile)
     await first
     expect(hook.busy.value).toBeNull()
-    hook.setFile(new File(['{}'], 'again.json'))
+    hook.setFiles([new File(['{}'], 'again.json')])
     const second = hook.profile(43)
     release(profile)
     await second
@@ -260,11 +309,120 @@ describe('useJsonMappingWizard', () => {
   it('backs to the previous step and resets transient data of forward steps', async () => {
     const profile = makeProfile()
     vi.spyOn(hook.api, 'profileJson').mockResolvedValue(profile)
-    hook.setFile(new File(['{}'], 'posts.json'))
+    hook.setFiles([new File(['{}'], 'posts.json')])
     await hook.profile(42)
     expect(hook.state.value.step).toBe('structure')
 
     hook.back()
     expect(hook.state.value.step).toBe('upload')
+    if (hook.state.value.step === 'upload') {
+      expect(hook.state.value.files).toHaveLength(0)
+    }
+  })
+
+  it('profiles a doc while batch docs are set', async () => {
+    const profile = makeProfile({ doc_id: 11 })
+    const profileJsonSpy = vi.spyOn(hook.api, 'profileJson').mockResolvedValue(profile)
+    hook.setFiles([new File(['{}'], 'a.json'), new File(['{}'], 'b.json')])
+    hook.setBatchDocs(makeBatchEntries([11, 12]))
+
+    await hook.profile(11)
+
+    expect(profileJsonSpy).toHaveBeenCalledWith(KB_ID, 11)
+    expect(hook.state.value.step).toBe('structure')
+  })
+
+  it('ingests every batch doc and resets when all succeed', async () => {
+    hook.setFiles([new File(['{}'], '11.json')])
+    hook.setBatchDocs(makeBatchEntries([11, 12, 13]))
+    await reachConfirm(11)
+
+    const ingestSpy = vi.spyOn(hook.api, 'startJsonIngest')
+    ingestSpy
+      .mockResolvedValueOnce(ingestResult(11, 1))
+      .mockResolvedValueOnce(ingestResult(12, 2))
+      .mockResolvedValueOnce(ingestResult(13, 3))
+
+    const results = await hook.confirmIngest(3)
+
+    expect(ingestSpy).toHaveBeenCalledTimes(3)
+    expect(ingestSpy).toHaveBeenNthCalledWith(1, KB_ID, { doc_id: 11, mapping_version_id: 3 })
+    expect(ingestSpy).toHaveBeenNthCalledWith(2, KB_ID, { doc_id: 12, mapping_version_id: 3 })
+    expect(ingestSpy).toHaveBeenNthCalledWith(3, KB_ID, { doc_id: 13, mapping_version_id: 3 })
+    expect(results.map((r) => r.doc_id)).toEqual([11, 12, 13])
+    // 全部成功：重置回 upload，批次清空
+    expect(hook.state.value.step).toBe('upload')
+    if (hook.state.value.step === 'upload') {
+      expect(hook.state.value.files).toHaveLength(0)
+    }
+    expect(hook.batchDocs.value).toBeNull()
+  })
+
+  it('keeps ingesting other docs after one fails and retries only the failed one', async () => {
+    hook.setFiles([new File(['{}'], '11.json')])
+    hook.setBatchDocs(makeBatchEntries([11, 12, 13]))
+    await reachConfirm(11)
+
+    const ingestSpy = vi.spyOn(hook.api, 'startJsonIngest')
+    ingestSpy
+      .mockResolvedValueOnce(ingestResult(11, 1))
+      .mockRejectedValueOnce(new Error('ingest boom'))
+      .mockResolvedValueOnce(ingestResult(13, 3))
+
+    const results = await hook.confirmIngest(3)
+
+    // 第 2 条失败不影响第 1、3 条
+    expect(ingestSpy).toHaveBeenCalledTimes(3)
+    expect(results.map((r) => r.doc_id)).toEqual([11, 13])
+    expect(hook.state.value.step).toBe('confirm')
+    if (hook.batchDocs.value) {
+      expect(hook.batchDocs.value[0].status).toBe('ingested')
+      expect(hook.batchDocs.value[1].status).toBe('failed')
+      expect(hook.batchDocs.value[1].error).toMatch(/boom/)
+      expect(hook.batchDocs.value[2].status).toBe('ingested')
+    }
+
+    // 再次确认：只重试失败的条目，成功项不再调用
+    ingestSpy.mockResolvedValueOnce(ingestResult(12, 2))
+    const retried = await hook.confirmIngest(3)
+
+    expect(ingestSpy).toHaveBeenCalledTimes(4)
+    expect(ingestSpy).toHaveBeenNthCalledWith(4, KB_ID, { doc_id: 12, mapping_version_id: 3 })
+    expect(retried.map((r) => r.doc_id)).toEqual([12])
+    // 全部成功后才重置
+    expect(hook.batchDocs.value).toBeNull()
+    expect(hook.state.value.step).toBe('upload')
+  })
+
+  it('prevents double submits while batch ingest is running', async () => {
+    hook.setFiles([new File(['{}'], '11.json')])
+    hook.setBatchDocs(makeBatchEntries([11]))
+    await reachConfirm(11)
+
+    let release: (r: Awaited<ReturnType<typeof hook.api.startJsonIngest>>) => void = () => {}
+    vi.spyOn(hook.api, 'startJsonIngest').mockImplementation(
+      () => new Promise((resolve) => (release = resolve)),
+    )
+
+    const first = hook.confirmIngest(3)
+    expect(hook.busy.value).toBe('ingest')
+    await expect(hook.confirmIngest(3)).rejects.toThrow(/busy|进行中/)
+
+    release(ingestResult(11, 1))
+    await first
+    expect(hook.busy.value).toBeNull()
+    expect(hook.state.value.step).toBe('upload')
+  })
+
+  it('resumes configuring an already uploaded doc with an empty file list', async () => {
+    const profile = makeProfile()
+    const profileJsonSpy = vi.spyOn(hook.api, 'profileJson').mockResolvedValue(profile)
+
+    hook.setDocForResume(42)
+
+    await hook.profile(42)
+
+    expect(profileJsonSpy).toHaveBeenCalledWith(KB_ID, 42)
+    expect(hook.state.value.step).toBe('structure')
   })
 })

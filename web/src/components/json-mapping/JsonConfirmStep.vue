@@ -95,6 +95,27 @@
       </p>
     </section>
 
+    <!-- 入库文件（批量导入模式；单文件模式不渲染） -->
+    <section v-if="files && files.length > 0" class="json-confirm__section">
+      <h3 class="json-confirm__title">入库文件</h3>
+      <ul class="json-confirm__files">
+        <li v-for="f in files" :key="f.docId" class="json-confirm__file">
+          <span class="json-confirm__file-name" :title="f.name">{{ f.name }}</span>
+          <span
+            v-if="f.status === 'ingested'"
+            class="json-confirm__pill json-confirm__pill--ok"
+            :title="f.jobId !== null ? `入库任务 #${f.jobId}` : undefined"
+          >已入库（任务 #{{ f.jobId }}）</span>
+          <span
+            v-else-if="f.status === 'failed'"
+            class="json-confirm__pill json-confirm__pill--err"
+            :title="f.error ?? undefined"
+          >失败</span>
+          <span v-else class="json-confirm__pill">待处理</span>
+        </li>
+      </ul>
+    </section>
+
     <!-- 确认勾选 -->
     <label class="json-confirm__final">
       <el-checkbox v-model="checked">
@@ -106,6 +127,7 @@
 
 <script setup lang="ts">
 import { computed, ref } from 'vue'
+import type { BatchDocEntry } from './useJsonMappingWizard'
 import type {
   Compatibility,
   MappingDefinition,
@@ -120,6 +142,8 @@ const props = defineProps<{
   totalRows: number
   warningCount: number
   compatibility: Compatibility | null
+  /** 批量导入批次（单文件模式缺省）：展示各文件入库状态 */
+  files?: BatchDocEntry[]
 }>()
 
 const mode = ref<'new' | 'existing'>('new')
@@ -272,6 +296,48 @@ defineExpose({ checked, breakingConfirmed, submitPayload, versionToUse, needsRec
   margin: 10px 0 0;
   font-size: 12px;
   color: var(--text-secondary);
+}
+
+.json-confirm__files {
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+}
+
+.json-confirm__file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 12px;
+  color: var(--text-primary);
+}
+
+.json-confirm__file-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.json-confirm__pill {
+  padding: 1px 8px;
+  border-radius: var(--radius-full);
+  background: color-mix(in srgb, var(--text-secondary) 10%, transparent);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.json-confirm__pill--ok {
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  color: var(--accent-green);
+}
+
+.json-confirm__pill--err {
+  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
+  color: var(--accent-red);
 }
 
 .json-confirm__break-check {

@@ -18,25 +18,26 @@
         ref="fileInput"
         type="file"
         accept=".json,.jsonl"
+        multiple
         class="json-upload__input"
         @change="handleInputChange"
       />
       <el-icon class="json-upload__icon" aria-hidden="true"><UploadFilled /></el-icon>
       <p class="json-upload__title">选择 JSON / JSONL 文件</p>
-      <p class="json-upload__hint">单文件，最大 100 MB</p>
+      <p class="json-upload__hint">支持多选，最多 20 个，单个最大 100 MB</p>
     </div>
 
-    <!-- 已选文件 + 进度 -->
-    <div v-if="file" class="json-upload__file">
-      <div class="json-upload__file-head">
-        <span class="json-upload__file-name" :title="file.name">{{ file.name }}</span>
-        <span class="json-upload__file-size kpi-num">{{ formatSize(file.size) }}</span>
+    <!-- 已选文件列表 + 进度 -->
+    <div v-if="files.length" class="json-upload__file">
+      <div v-for="(f, i) in files" :key="i" class="json-upload__file-head">
+        <span class="json-upload__file-name" :title="f.name">{{ f.name }}</span>
+        <span class="json-upload__file-size kpi-num">{{ formatSize(f.size) }}</span>
         <button
           type="button"
           class="json-upload__clear btn-press"
           :disabled="busy !== null"
-          :aria-label="'移除已选择的文件'"
-          @click="emit('clear')"
+          :aria-label="`移除文件 ${f.name}`"
+          @click="emit('clear', i)"
         >
           移除
         </button>
@@ -54,51 +55,71 @@
       </div>
     </div>
 
-    <p v-if="error" class="json-upload__error" role="alert">{{ error }}</p>
+    <p v-if="displayError" class="json-upload__error" role="alert">{{ displayError }}</p>
   </div>
 </template>
 
 <script setup lang="ts">
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { UploadFilled, Loading } from '@element-plus/icons-vue'
 import type { BusyOperation } from './useJsonMappingWizard'
 
-defineProps<{
-  file: File | null
+const props = defineProps<{
+  files: File[]
   busy: BusyOperation | null
   error: string
 }>()
 
 const emit = defineEmits<{
-  (e: 'pick', file: File): void
-  (e: 'clear'): void
+  (e: 'pick', files: File[]): void
+  (e: 'clear', index: number): void
 }>()
 
+const MAX_FILES = 20
 const MAX_BYTES = 100 * 1024 * 1024
 
 const fileInput = ref<HTMLInputElement | null>(null)
 const dragging = ref(false)
 const localError = ref('')
 
+/** 父组件错误（error prop）与本地校验错误合并展示 */
+const displayError = computed(() => {
+  const parts = [props.error, localError.value].filter((s) => s.length > 0)
+  return parts.join('\n')
+})
+
 function handleDrop(e: DragEvent) {
   dragging.value = false
-  const files = e.dataTransfer?.files
-  if (files?.length) pick(files[0])
+  const files = Array.from(e.dataTransfer?.files ?? [])
+  if (files.length) pick(files)
 }
 
 function handleInputChange(e: Event) {
   const input = e.target as HTMLInputElement
-  if (input.files?.length) pick(input.files[0])
+  const files = Array.from(input.files ?? [])
+  if (files.length) pick(files)
   input.value = ''
 }
 
-function pick(file: File) {
+function pick(selected: File[]) {
   localError.value = ''
-  if (file.size > MAX_BYTES) {
-    localError.value = `文件超过 100 MB 限制（当前 ${formatSize(file.size)}）`
-    return
+  const messages: string[] = []
+  const valid: File[] = []
+  for (const f of selected) {
+    if (f.size > MAX_BYTES) {
+      messages.push(`「${f.name}」超过 100 MB 限制（当前 ${formatSize(f.size)}）`)
+    } else {
+      valid.push(f)
+    }
   }
-  emit('pick', file)
+  const room = Math.max(MAX_FILES - props.files.length, 0)
+  const kept = valid.length > room ? valid.slice(0, room) : valid
+  if (kept.length < valid.length) {
+    messages.push('最多选择 20 个文件（已保留前 20 个）')
+  }
+  localError.value = messages.join('\n')
+  if (kept.length === 0) return
+  emit('pick', kept)
 }
 
 function formatSize(bytes: number): string {
@@ -166,6 +187,10 @@ function formatSize(bytes: number): string {
   display: flex;
   align-items: center;
   gap: 10px;
+}
+
+.json-upload__file-head + .json-upload__file-head {
+  margin-top: 8px;
 }
 
 .json-upload__file-name {

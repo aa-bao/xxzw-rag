@@ -4,19 +4,24 @@
     <header class="kb-docs__bar">
       <h2 class="kb-docs__title">文档</h2>
       <div class="kb-docs__actions">
-        <el-button type="primary" class="btn-press" @click="uploadVisible = true">
+        <el-button type="primary" class="btn-press" @click="uploadTypeVisible = true">
           <el-icon class="kb-docs__btn-icon"><Upload /></el-icon>
           上传
         </el-button>
       </div>
     </header>
 
-    <!-- ══ 上传弹窗：拖拽 / 选择文件 → 队列 → 并发上传 ══ -->
+    <!-- ══ 上传类型：先选择普通文档或结构化数据 ══ -->
+    <UploadTypeDialog
+      v-model:visible="uploadTypeVisible"
+      @select="handleUploadType"
+    />
+
+    <!-- ══ 普通文档上传：拖拽 / 选择文件 → 队列 → 并发上传 ══ -->
     <UploadDialog
       v-model:visible="uploadVisible"
       :kb-id="kbId"
       @uploaded="handleUploaded"
-      @open-json-wizard="handleOpenJsonWizard"
     />
 
     <!-- ══ JSON 映射向导：JSON/JSONL 结构化入库 ══ -->
@@ -455,6 +460,7 @@ import {
 import { listChunks } from '../api/retrieval'
 import type { ChunkInfo } from '../api/retrieval'
 import UploadDialog from '../components/UploadDialog.vue'
+import UploadTypeDialog, { type UploadType } from '../components/UploadTypeDialog.vue'
 import JsonMappingWizard from '../components/json-mapping/JsonMappingWizard.vue'
 
 const route = useRoute()
@@ -839,8 +845,19 @@ function openChunks(row: DocRow) {
   router.push({ name: 'kb-chunks', params: { id: String(kbId.value), docId: String(row.id) } })
 }
 
-/* ── 上传弹窗：UploadDialog 组件托管队列与并发，这里只接收成功回调 ── */
+/* ── 上传入口：先选择普通文档或结构化数据 ── */
+const uploadTypeVisible = ref(false)
 const uploadVisible = ref(false)
+
+function handleUploadType(type: UploadType) {
+  uploadTypeVisible.value = false
+  if (type === 'document') {
+    uploadVisible.value = true
+    return
+  }
+  wizardDocId.value = null
+  wizardVisible.value = true
+}
 
 /** 上传成功：追加列表并启动轮询（UploadDialog 已构造 DocInfo） */
 function handleUploaded(doc: DocInfo) {
@@ -852,18 +869,10 @@ function handleUploaded(doc: DocInfo) {
 const wizardVisible = ref(false)
 const wizardDocId = ref<number | null>(null)
 
-/** JSON/JSONL 文件：关闭上传弹窗并打开映射向导（不进入 legacy 队列） */
-function handleOpenJsonWizard(file: File) {
-  // 单文件向导：一次只打开一个 JSON 会话
-  void file
-  uploadVisible.value = false
-  wizardDocId.value = null
-  wizardVisible.value = true
-}
-
-/** 向导确认入库成功：追加文档并轮询新状态（awaiting_mapping → ... → done） */
+/** 向导确认入库成功：追加文档并轮询新状态（awaiting_mapping → ... → done）。
+ *  继续配置的文档已在列表中，此时只更新行而非追加，避免重复 id 破坏表格全选 */
 function handleWizardIngested(payload: { docId: number; jobId: number }) {
-  wizardVisible.value = false
+  // 关闭职责已移交向导组件（全部成功 emit('close')；部分失败留在向导内重试）
   wizardDocId.value = payload.docId
   const doc: DocInfo = {
     id: payload.docId,
@@ -877,7 +886,9 @@ function handleWizardIngested(payload: { docId: number; jobId: number }) {
     created_at: new Date().toISOString(),
     ingested_at: null,
   }
-  docs.value = [...docs.value, { ...doc, mapping_ready: true }]
+  docs.value = docs.value.some((d) => d.id === payload.docId)
+    ? docs.value.map((d) => (d.id === payload.docId ? { ...d, ...doc, mapping_ready: true } : d))
+    : [...docs.value, { ...doc, mapping_ready: true }]
   pollDoc(payload.docId)
 }
 

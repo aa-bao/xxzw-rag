@@ -1,9 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
-import ElementPlus from 'element-plus'
+import ElementPlus, { ElMessageBox } from 'element-plus'
 import KbDocsView from '../../views/KbDocsView.vue'
 import JsonMappingWizard from './JsonMappingWizard.vue'
 import UploadDialog from '../UploadDialog.vue'
+import UploadTypeDialog from '../UploadTypeDialog.vue'
 
 vi.mock('../../api/structured', () => ({
   profileJson: vi.fn(),
@@ -38,6 +39,7 @@ vi.mock('vue-router', () => ({
 
 const { uploadDoc } = await import('../../api/docs')
 const uploadDocMock = vi.mocked(uploadDoc)
+import type { UploadDocResult } from '../../api/docs'
 
 const globalMount = {
   global: { plugins: [ElementPlus] },
@@ -63,11 +65,26 @@ function buttonsByText(scope: Element, text: string): HTMLButtonElement[] {
 }
 
 async function pickFileIn(scope: Element, file: File) {
+  await pickFilesIn(scope, [file])
+}
+
+async function pickFilesIn(scope: Element, files: File[]) {
   const input = queryFileInput(scope)
   if (!input) throw new Error('no file input found in scope')
-  Object.defineProperty(input, 'files', { value: [file], configurable: true })
+  Object.defineProperty(input, 'files', { value: files, configurable: true })
   input.dispatchEvent(new Event('change', { bubbles: true }))
   await flushPromises()
+}
+
+/** 结构探查响应 fixture */
+const profileFixture = {
+  source_format: 'json' as const,
+  doc_id: 11,
+  candidates: [],
+  fingerprint: 'fp',
+  total_records_estimate: 0,
+  sampled_records: 0,
+  warnings: [],
 }
 
 async function mountDialog(
@@ -95,24 +112,12 @@ describe('UploadDialog file routing', () => {
     expect(uploadDocMock).toHaveBeenCalledWith(5, expect.any(File))
   })
 
-  it('selecting a JSON file emits open-json-wizard and does not enqueue legacy upload', async () => {
+  it('rejects JSON in the ordinary document flow', async () => {
     const wrapper = await mountDialog(UploadDialog, { visible: true, kbId: 5 })
     await pickFileIn(dialogScope(wrapper), new File(['{}'], 'posts.json', { type: 'application/json' }))
 
-    expect(wrapper.emitted('open-json-wizard')).toHaveLength(1)
-    expect((wrapper.emitted('open-json-wizard')![0] as [File])[0].name).toBe('posts.json')
     expect(uploadDocMock).not.toHaveBeenCalled()
-  })
-
-  it('selecting a JSONL file emits open-json-wizard without enqueueing legacy upload', async () => {
-    const wrapper = await mountDialog(UploadDialog, { visible: true, kbId: 5 })
-    await pickFileIn(
-      dialogScope(wrapper),
-      new File(['{"a":1}\n'], 'records.jsonl', { type: 'application/jsonl' }),
-    )
-
-    expect(wrapper.emitted('open-json-wizard')).toHaveLength(1)
-    expect(uploadDocMock).not.toHaveBeenCalled()
+    expect(dialogScope(wrapper).textContent).toContain('不支持的普通文档类型')
   })
 
   it('selecting an unsupported extension shows an inline error and uploads nothing', async () => {
@@ -122,26 +127,48 @@ describe('UploadDialog file routing', () => {
     expect(uploadDocMock).not.toHaveBeenCalled()
     const err = dialogScope(wrapper).querySelector('.upload-drop__inline-error')
     expect(err).not.toBeNull()
-    expect(err?.textContent).toContain('不支持的文件类型')
+    expect(err?.textContent).toContain('不支持的普通文档类型')
   })
 })
 
-describe('KbDocsView JSON routing', () => {
+describe('KbDocsView upload type routing', () => {
   beforeEach(() => {
     vi.clearAllMocks()
   })
 
-  it('opens JsonMappingWizard when the upload dialog reports a JSON file', async () => {
+  it('opens the type selector before either upload flow', async () => {
     const wrapper = mount(KbDocsView, globalMount)
     await flushPromises()
 
-    const dialog = wrapper.findComponent(UploadDialog)
-    dialog.vm.$emit('open-json-wizard', new File(['{}'], 'posts.json', { type: 'application/json' }))
+    await wrapper.find('.kb-docs__actions button').trigger('click')
+
+    expect(wrapper.findComponent(UploadTypeDialog).props('visible')).toBe(true)
+    expect(wrapper.findComponent(UploadDialog).props('visible')).toBe(false)
+    expect(wrapper.findComponent(JsonMappingWizard).exists()).toBe(false)
+  })
+
+  it('opens the ordinary upload dialog after choosing ordinary documents', async () => {
+    const wrapper = mount(KbDocsView, globalMount)
+    await flushPromises()
+
+    wrapper.findComponent(UploadTypeDialog).vm.$emit('select', 'document')
+    await flushPromises()
+
+    expect(wrapper.findComponent(UploadDialog).props('visible')).toBe(true)
+    expect(wrapper.findComponent(JsonMappingWizard).exists()).toBe(false)
+  })
+
+  it('opens JsonMappingWizard after choosing structured data', async () => {
+    const wrapper = mount(KbDocsView, globalMount)
+    await flushPromises()
+
+    const typeDialog = wrapper.findComponent(UploadTypeDialog)
+    typeDialog.vm.$emit('select', 'structured')
     await flushPromises()
 
     const wizard = wrapper.findComponent(JsonMappingWizard)
     expect(wizard.exists()).toBe(true)
-    expect(dialog.props('visible')).toBe(false)
+    expect(wrapper.findComponent(UploadDialog).props('visible')).toBe(false)
     // 向导步骤头渲染在 body（dialog teleport）
     expect(document.body.querySelectorAll('.wizard-step')).toHaveLength(6)
   })
@@ -181,6 +208,20 @@ describe('JsonMappingWizard shell', () => {
     expect(primary2[0].disabled).toBe(false)
   })
 
+  it('shows the backend error message when structured upload fails', async () => {
+    uploadDocMock.mockRejectedValueOnce({
+      error: { code: 'PARSER_NOT_FOUND', message: '不支持的文件类型: .json' },
+    })
+    await mountDialog(JsonMappingWizard, { visible: true, kbId: 5 })
+    await pickFileIn(document.body, new File(['{}'], 'posts.json', { type: 'application/json' }))
+
+    await buttonsByText(document.body, '开始探查')[0].click()
+    await flushPromises()
+
+    expect(document.body.textContent).toContain('不支持的文件类型: .json')
+    expect(document.body.textContent).not.toContain('操作失败，请重试')
+  })
+
   it('continue-configuration mode profiles the preset doc directly without re-upload', async () => {
     profileJsonMock.mockResolvedValue({
       source_format: 'json',
@@ -205,5 +246,107 @@ describe('JsonMappingWizard shell', () => {
     expect(profileJsonMock).toHaveBeenCalledWith(5, 42)
     // 进入结构检测步骤（展示候选路径元信息）
     expect(document.body.textContent).toContain('检测到 0 个候选记录路径')
+  })
+})
+
+describe('JsonMappingWizard batch upload', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+  })
+  // 仅在本 describe 内清理 ElMessageBox spy（restoreAllMocks 会连带清掉
+  // 工厂 vi.fn 的默认实现，不能放在文件级 afterEach）
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('uploads multiple selected files in order and profiles the first doc', async () => {
+    uploadDocMock
+      .mockResolvedValueOnce({ doc_id: 11, job_id: 1, status: 'queued' })
+      .mockResolvedValueOnce({ doc_id: 12, job_id: 2, status: 'queued' })
+    profileJsonMock.mockResolvedValue(profileFixture)
+    await mountDialog(JsonMappingWizard, { visible: true, kbId: 5 })
+
+    await pickFilesIn(document.body, [
+      new File(['{}'], 'a.json', { type: 'application/json' }),
+      new File(['{}'], 'b.json', { type: 'application/json' }),
+    ])
+    await buttonsByText(document.body, '开始探查')[0].click()
+    await flushPromises()
+
+    expect(uploadDocMock).toHaveBeenCalledTimes(2)
+    expect(uploadDocMock.mock.calls[0][0]).toBe(5)
+    expect((uploadDocMock.mock.calls[0][1] as File).name).toBe('a.json')
+    expect((uploadDocMock.mock.calls[1][1] as File).name).toBe('b.json')
+    // 探查使用第一个上传成功的 doc_id
+    expect(profileJsonMock).toHaveBeenCalledWith(5, 11)
+  })
+
+  it('continues with successful uploads when one file fails, and retries the failed file after confirm', async () => {
+    const confirmSpy = vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+    uploadDocMock
+      .mockResolvedValueOnce({ doc_id: 11, job_id: 1, status: 'queued' })
+      .mockRejectedValueOnce({ error: { code: 'PARSE_FAILED', message: '解析失败' } })
+    profileJsonMock.mockResolvedValue(profileFixture)
+    await mountDialog(JsonMappingWizard, { visible: true, kbId: 5 })
+
+    await pickFilesIn(document.body, [
+      new File(['{}'], 'a.json', { type: 'application/json' }),
+      new File(['{}'], 'b.json', { type: 'application/json' }),
+    ])
+    // 第一轮：b.json 失败，成功项继续探查
+    await buttonsByText(document.body, '开始探查')[0].click()
+    await flushPromises()
+    expect(profileJsonMock).toHaveBeenCalledWith(5, 11)
+
+    // 返回上传步骤，重试失败项：弹确认框，文案含失败文件名
+    await buttonsByText(document.body, '返回')[0].click()
+    await flushPromises()
+    await buttonsByText(document.body, '开始探查')[0].click()
+    await flushPromises()
+
+    expect(confirmSpy).toHaveBeenCalledTimes(1)
+    expect(confirmSpy.mock.calls[0][0]).toContain('b.json')
+    // 确认「跳过并继续」后重试成功，用成功的 doc_id 探查
+    expect(uploadDocMock).toHaveBeenCalledTimes(3)
+    expect(profileJsonMock).toHaveBeenLastCalledWith(5, 11)
+  })
+
+  it('shows an all-failed error without profiling when every upload fails', async () => {
+    uploadDocMock.mockRejectedValue(new Error('网络错误'))
+    await mountDialog(JsonMappingWizard, { visible: true, kbId: 5 })
+    await pickFileIn(document.body, new File(['{}'], 'x.json', { type: 'application/json' }))
+
+    await buttonsByText(document.body, '开始探查')[0].click()
+    await flushPromises()
+
+    expect(profileJsonMock).not.toHaveBeenCalled()
+    expect(document.body.textContent).toContain('所有文件上传失败')
+  })
+
+  it('shows upload progress text while the batch is uploading', async () => {
+    let resolveFirst!: (v: UploadDocResult) => void
+    uploadDocMock
+      .mockImplementationOnce(() => new Promise<UploadDocResult>((resolve) => { resolveFirst = resolve }))
+      .mockResolvedValueOnce({ doc_id: 12, job_id: 2, status: 'queued' })
+    profileJsonMock.mockResolvedValue(profileFixture)
+    await mountDialog(JsonMappingWizard, { visible: true, kbId: 5 })
+
+    await pickFilesIn(document.body, [
+      new File(['{}'], 'a.json', { type: 'application/json' }),
+      new File(['{}'], 'b.json', { type: 'application/json' }),
+    ])
+    const primary = buttonsByText(document.body, '开始探查')[0]
+    await primary.click()
+    await flushPromises()
+
+    // 首个文件仍在上传：进度文案可见
+    expect(document.body.textContent).toContain('上传中')
+    expect(document.body.textContent).toContain('a.json')
+
+    resolveFirst({ doc_id: 11, job_id: 1, status: 'queued' })
+    await flushPromises()
+
+    expect(uploadDocMock).toHaveBeenCalledTimes(2)
+    expect(profileJsonMock).toHaveBeenCalledWith(5, 11)
   })
 })
