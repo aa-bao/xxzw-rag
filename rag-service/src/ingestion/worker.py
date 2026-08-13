@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
@@ -15,11 +16,21 @@ from typing import Any
 
 from sqlalchemy import select, update
 
-from src.db.models import Document, DocumentJob, KnowledgeBase
+from src.db.models import (
+    Document,
+    DocumentJob,
+    DocumentMapping,
+    KnowledgeBase,
+    MappingTemplateVersion,
+)
 from src.ingestion.factory import ParserFactory
 from src.ingestion.splitter import split_text
 from src.models.client import ModelError, ModelRelayClient
 from src.retrieval.chroma import ChromaRetrieval
+from src.structured.models import MappingDefinition, RecordTypeMapping
+from src.structured.paths import compile_path
+from src.structured.stream import iter_source
+from src.structured.transforms import MappingContext, map_record
 
 logger = logging.getLogger(__name__)
 
@@ -141,12 +152,38 @@ class IngestWorker:
                     return
 
                 # ① parsing：读文件 + 解析文本；回填 content_hash（供上传查重用）
+                structured = Path(doc.title).suffix.lower() in {".json", ".jsonl"}
+                mapping_definition: MappingDefinition | None = None
+                mapping_version_id = 0
+                if structured:
+                    mapping_row = (
+                        await session.execute(
+                            select(
+                                MappingTemplateVersion.id,
+                                MappingTemplateVersion.mapping_json,
+                            )
+                            .join(
+                                DocumentMapping,
+                                DocumentMapping.mapping_version_id
+                                == MappingTemplateVersion.id,
+                            )
+                            .where(DocumentMapping.document_id == doc.id)
+                        )
+                    ).one_or_none()
+                    if mapping_row is None:
+                        await self._fail_job(job.id, "JSON 文档尚未绑定映射模板")
+                        return
+                    mapping_version_id = int(mapping_row.id)
+                    mapping_definition = MappingDefinition.model_validate(
+                        json.loads(mapping_row.mapping_json)
+                    )
+
                 if not await self._set_stage(job.id, doc.id, "parsing"):
                     return  # 文档处理中被删除
-                sections = await asyncio.to_thread(
-                    self._parse_file, doc, kb
-                )
-                text = "\n".join(s.text for s in sections if s.text)
+                text = ""
+                if not structured:
+                    sections = await asyncio.to_thread(self._parse_file, doc, kb)
+                    text = "\n".join(s.text for s in sections if s.text)
                 if doc.content_hash is None:
                     doc.content_hash = hashlib.sha256(
                         (self._upload_root / doc.file_path).read_bytes()
@@ -155,12 +192,22 @@ class IngestWorker:
                 # ② chunking：分块
                 if not await self._set_stage(job.id, doc.id, "chunking"):
                     return
-                chunks = split_text(
-                    doc.id,
-                    text,
-                    chunk_size=kb.chunk_size,
-                    overlap=kb.overlap,
-                )
+                if structured and mapping_definition is not None:
+                    chunks = await asyncio.to_thread(
+                        self._structured_chunks,
+                        doc,
+                        mapping_definition,
+                        mapping_version_id,
+                        kb.chunk_size,
+                        kb.overlap,
+                    )
+                else:
+                    chunks = split_text(
+                        doc.id,
+                        text,
+                        chunk_size=kb.chunk_size,
+                        overlap=kb.overlap,
+                    )
                 if not chunks:
                     await self._fail_job(job.id, "文档内容为空，未生成分块")
                     return
@@ -180,6 +227,7 @@ class IngestWorker:
                                 "chunk_id": c["chunk_id"],
                                 "content": content,
                                 "chunk_index": c["index"],
+                                **self._structured_metadata(c),
                             }
                         )
                         continue
@@ -191,6 +239,7 @@ class IngestWorker:
                                     "chunk_id": f"{c['chunk_id']}#{idx}",
                                     "content": piece,
                                     "chunk_index": c["index"],
+                                    **self._structured_metadata(c),
                                 }
                             )
 
@@ -212,6 +261,7 @@ class IngestWorker:
                         "title": doc.title,
                         "page": None,
                         "chunk_index": it["chunk_index"],
+                        **self._structured_metadata(it),
                     }
                     for it in embed_items
                 ]
@@ -261,6 +311,93 @@ class IngestWorker:
         data = path.read_bytes()
         # ParserFactory 需要文件名（取后缀）与 media_type；txt 统一按 text/plain
         return self._parser_factory.parse(doc.title, "text/plain", data)
+
+    def _structured_chunks(
+        self,
+        doc: Document,
+        definition: MappingDefinition,
+        mapping_version_id: int,
+        chunk_size: int,
+        overlap: int,
+    ) -> list[dict[str, Any]]:
+        source_path = self._upload_root / doc.file_path
+        source_hash = doc.content_hash or hashlib.sha256(source_path.read_bytes()).hexdigest()
+        context = MappingContext(
+            source_hash=source_hash,
+            mapping_version_id=mapping_version_id,
+        )
+        policies: dict[str, str] = {}
+
+        def collect(mapping: RecordTypeMapping) -> None:
+            policies[mapping.name] = mapping.chunk_policy
+            for child in mapping.children:
+                collect(child)
+
+        for root in definition.record_types:
+            collect(root)
+
+        chunks: list[dict[str, Any]] = []
+        for root in definition.record_types:
+            record_path = root.record_path
+            if definition.source_format == "json" and record_path == "$":
+                with source_path.open("rb") as handle:
+                    first = next(
+                        (chr(value) for value in handle.read(64) if not chr(value).isspace()),
+                        "",
+                    )
+                if first == "[":
+                    record_path = "$[*]"
+            compiled = compile_path(record_path)
+            for source in iter_source(source_path, definition.source_format, compiled):
+                for record in map_record(source, root, context):
+                    policy = policies.get(record.record_type, "semantic")
+                    if policy in {"ignore", "parent-only"}:
+                        continue
+                    text = "\n\n".join(
+                        value for value in (record.title, record.content) if value
+                    ).strip()
+                    if not text:
+                        continue
+                    pieces = (
+                        split_text(
+                            doc.id,
+                            text,
+                            chunk_size=chunk_size,
+                            overlap=overlap,
+                        )
+                        if policy == "semantic"
+                        else [{"content": text}]
+                    )
+                    for ordinal, piece in enumerate(pieces):
+                        content = str(piece["content"])
+                        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                        chunks.append(
+                            {
+                                "chunk_id": (
+                                    f"{doc.id}:{record.record_id}:{ordinal}:"
+                                    f"{content_hash[:12]}"
+                                ),
+                                "content": content,
+                                "index": len(chunks),
+                                "record_id": record.record_id,
+                                "parent_id": record.parent_id,
+                                "record_type": record.record_type,
+                                "source_pointer": record.source_pointer,
+                                "mapping_version_id": mapping_version_id,
+                            }
+                        )
+        return chunks
+
+    @staticmethod
+    def _structured_metadata(chunk: dict[str, Any]) -> dict[str, Any]:
+        keys = (
+            "record_id",
+            "parent_id",
+            "record_type",
+            "source_pointer",
+            "mapping_version_id",
+        )
+        return {key: chunk[key] for key in keys if key in chunk}
 
     async def _set_stage(self, job_id: int, doc_id: int, stage: str) -> bool:
         """更新 job 阶段与 doc 状态；文档已被删除（deleting）时不动 doc，标记 job 完成并返回 False。"""

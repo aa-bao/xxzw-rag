@@ -65,6 +65,27 @@ class User(Base):
         server_default=CURRENT_TIMESTAMP,
         server_onupdate=CURRENT_TIMESTAMP,
     )
+    platform_tenant_id: Mapped[str | None] = mapped_column(String(64))
+    platform_user_id: Mapped[str | None] = mapped_column(String(64))
+    platform_department_id: Mapped[str | None] = mapped_column(String(64))
+
+
+class PlatformSession(Base):
+    __tablename__ = "rag_platform_session"
+    __table_args__ = (
+        Index("idx_platform_session_expiry", "expires_at"),
+        Index("idx_platform_session_user", "user_id", "expires_at"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("rag_user.id", ondelete="CASCADE"), nullable=False
+    )
+    token_hash: Mapped[str] = mapped_column(String(64), nullable=False, unique=True)
+    identity_json: Mapped[str] = mapped_column(Text, nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    refreshed_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
 
 
 class Session(Base):
@@ -102,6 +123,9 @@ class KnowledgeBase(Base):
     owner_user_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("rag_user.id", ondelete="RESTRICT"), nullable=False
     )
+    # 平台归属（规范 10 §9.2）：LOCAL 模式为空串/None；平台模式由服务端写入，拒绝请求体覆盖
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(String(1000))
     chunk_size: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("512"))
@@ -147,6 +171,8 @@ class Document(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     title: Mapped[str] = mapped_column(String(500), nullable=False)
     source: Mapped[str] = mapped_column(String(2000), nullable=False)
     source_type: Mapped[str] = mapped_column(String(50), nullable=False, server_default=text("'upload'"))
@@ -204,6 +230,8 @@ class DocumentJob(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     doc_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     job_type: Mapped[str] = mapped_column(String(20), nullable=False)
     kb_job_id: Mapped[int | None] = mapped_column(BigInteger)
     target_collection: Mapped[str | None] = mapped_column(String(200))
@@ -225,6 +253,8 @@ class MappingTemplate(Base):
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     source_format: Mapped[str] = mapped_column(String(20), nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     created_by_user_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("rag_user.id", ondelete="RESTRICT"), nullable=False
     )
@@ -290,6 +320,8 @@ class IngestRun(Base):
     document_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("rag_document.id", ondelete="CASCADE"), nullable=False
     )
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     state: Mapped[str] = mapped_column(String(30), nullable=False)
     total_records: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
     processed_records: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"))
@@ -316,6 +348,8 @@ class Conversation(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     title: Mapped[str | None] = mapped_column(String(500))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
     updated_at: Mapped[datetime] = mapped_column(
@@ -348,6 +382,8 @@ class ConversationKb(Base):
     conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
     kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
 
 
@@ -367,6 +403,8 @@ class Message(Base):
     conversation_id: Mapped[str] = mapped_column(
         String(36), ForeignKey("rag_conversation.id", ondelete="CASCADE"), nullable=False
     )
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     role: Mapped[str] = mapped_column(String(20), nullable=False)
     content: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'completed'"))
@@ -425,6 +463,8 @@ class QueryLog(Base):
     )
     owner_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     kb_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tenant_id: Mapped[str | None] = mapped_column(String(64), index=True)
+    department_id: Mapped[str | None] = mapped_column(String(64))
     user_message_id: Mapped[int] = mapped_column(
         BigInteger, ForeignKey("rag_message.id", ondelete="CASCADE"), nullable=False
     )

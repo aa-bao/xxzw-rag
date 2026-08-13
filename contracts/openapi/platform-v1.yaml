@@ -1,0 +1,164 @@
+openapi: 3.1.0
+info:
+  title: RAG Database Platform Contract
+  version: 1.1.0
+  description: >
+    平台接入契约（规范 10）。探针与 SSO 端点经前端路由到达；
+    业务端点见 FastAPI 自生成文档。错误统一信封：
+    {"success": false, "error": {"code": "...", "message": "..."}}。
+paths:
+  /platform/health:
+    get:
+      operationId: platformHealth
+      summary: Process liveness probe（不依赖任何外部服务）
+      responses:
+        '200':
+          description: Process is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { const: healthy }
+  /platform/readiness:
+    get:
+      operationId: platformReadiness
+      summary: 就绪探针（覆盖数据库依赖；Conformance 模式恒 ready）
+      responses:
+        '200':
+          description: Mandatory dependencies are ready
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status]
+                properties:
+                  status: { const: ready }
+        '503':
+          description: A mandatory dependency is unavailable
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [status, reason]
+                properties:
+                  status: { const: not_ready }
+                  reason: { const: DEPENDENCY_UNAVAILABLE }
+  /platform/version:
+    get:
+      operationId: platformVersion
+      summary: Controller 下发的发布标识（不含任何密钥）
+      responses:
+        '200':
+          description: Controller-provided release identifiers
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [appKey, environment, version, sourceCommit, configVersion]
+                properties:
+                  appKey: { type: string }
+                  environment: { type: string, enum: [LOCAL, TEST, PRODUCTION, CONFORMANCE] }
+                  version: { type: string }
+                  sourceCommit: { type: string }
+                  configVersion: { type: string }
+  /platform/sso/bootstrap:
+    post:
+      operationId: platformSsoBootstrap
+      summary: 一次性授权码 + PKCE 兑换，建立项目独立 HttpOnly 会话
+      description: >
+        表单字段：code、state、codeVerifier、redirectUri、可选 route。
+        route 必须是同源相对路径（单前导 /，拒绝 //、scheme、host、反斜杠、..）。
+        授权码一次性：成功兑换后立即失效，重复兑换返回 401。
+      requestBody:
+        required: true
+        content:
+          application/x-www-form-urlencoded:
+            schema:
+              type: object
+              required: [code, state, codeVerifier, redirectUri]
+              properties:
+                code: { type: string }
+                state: { type: string }
+                codeVerifier: { type: string }
+                redirectUri: { type: string, format: uri }
+                route: { type: string, default: /kb }
+      responses:
+        '200':
+          description: 兑换成功，Set-Cookie rag_database_session（HttpOnly）
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    required: [route]
+                    properties:
+                      route: { type: string }
+        '401':
+          description: 授权码无效/已使用/state/PKCE/重定向不匹配
+        '422':
+          description: 表单字段缺失或 route 非法
+  /platform/session:
+    get:
+      operationId: platformSession
+      summary: 读取当前项目会话身份（前端经相对路径 ./platform/session 访问）
+      responses:
+        '200':
+          description: 会话有效，返回平台身份载荷
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [success, data]
+                properties:
+                  success: { const: true }
+                  data:
+                    type: object
+                    required: [tenantId, userId, username, displayName, departmentId, departmentName, departmentCategory, roles, permissions, dataScope, issuedAt]
+                    properties:
+                      tenantId: { type: string }
+                      userId: { type: string }
+                      username: { type: string }
+                      displayName: { type: string }
+                      departmentId: { type: string }
+                      departmentName: { type: string }
+                      departmentCategory: { type: string }
+                      roles: { type: array, items: { type: string } }
+                      permissions:
+                        type: array
+                        items:
+                          type: string
+                          pattern: '^rag-database:[a-z-]+$'
+                      dataScope:
+                        type: object
+                        required: [mode, departmentIds, userIds]
+                        properties:
+                          mode: { type: string, enum: [ALL, RESTRICTED] }
+                          departmentIds: { type: array, items: { type: string } }
+                          userIds: { type: array, items: { type: string } }
+                      issuedAt: { type: string }
+        '401':
+          description: 会话无效/已过期/被撤销
+  /platform/logout:
+    post:
+      operationId: platformLogout
+      summary: 退出只清理项目会话，不触碰主系统会话
+      responses:
+        '200':
+          description: 已清理项目会话与 Cookie
+  /api/rpa/conformance/permissions:
+    get:
+      operationId: conformancePermissions
+      summary: Conformance 业务 stub：校验 knowledge-base:manage 权限
+      responses:
+        '200':
+          description: 权限允许
+        '403':
+          description: 权限拒绝（真实 HTTP 403）
+        '404':
+          description: 非 Conformance 模式

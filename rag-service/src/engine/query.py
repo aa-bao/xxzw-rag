@@ -94,6 +94,8 @@ class QueryEngine:
 
         user_msg = Message(
             conversation_id=conversation_id,
+            tenant_id=conv.tenant_id,
+            department_id=conv.department_id,
             role="user",
             content=question,
             status="completed",
@@ -101,6 +103,8 @@ class QueryEngine:
         )
         assistant_msg = Message(
             conversation_id=conversation_id,
+            tenant_id=conv.tenant_id,
+            department_id=conv.department_id,
             role="assistant",
             content=None,
             status="streaming",
@@ -114,6 +118,8 @@ class QueryEngine:
             conversation_id=conversation_id,
             owner_user_id=user_id,
             kb_id=kb_ids[0],
+            tenant_id=conv.tenant_id,
+            department_id=conv.department_id,
             user_message_id=user_msg.id,
             assistant_message_id=assistant_msg.id,
         )

@@ -11,7 +11,7 @@ from sqlalchemy import delete as sa_delete
 from sqlalchemy import exists, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies import _session_factory, require_admin, require_user
+from src.api.dependencies import _session_factory, require_permission
 from src.db.models import (
     Conversation,
     ConversationKb,
@@ -23,7 +23,13 @@ from src.db.models import (
     Reference,
 )
 from src.db.repositories import KnowledgeBaseRepository
+from src.db.scope import scope_condition
 from src.ingestion.storage import atomic_save
+from src.platform.principal import (
+    PERMISSION_KB_MANAGE,
+    PERMISSION_PROJECT_VIEW,
+    ProjectPrincipal,
+)
 from src.retrieval.chroma import ChromaRetrieval
 from src.shared.config import Settings
 from src.shared.errors import AppError
@@ -103,7 +109,7 @@ async def _ensure_embedding_dimension(request: Request) -> int:
 async def create_kb(
     body: CreateKbRequest,
     request: Request,
-    user_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     settings: Settings = request.app.state.settings
@@ -112,7 +118,9 @@ async def create_kb(
     embedding_dimension = await _ensure_embedding_dimension(request)
 
     kb = await repo.create(
-        owner_user_id=user_id,
+        owner_user_id=principal.internal_user_id,
+        tenant_id=principal.tenant_id or None,
+        department_id=principal.department_id or None,
         name=body.name,
         description=body.description,
         embedding_model=request.app.state.runtime_relay.embedding_model,
@@ -125,12 +133,12 @@ async def create_kb(
 
 @router.get("")
 async def list_kb(
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_PROJECT_VIEW)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
-    """全员可见：返回所有启用中的知识库，附文档数与 chunk 总数。"""
+    """按租户与 dataScope 返回可见知识库，附文档数与 chunk 总数。"""
     repo = KnowledgeBaseRepository(db)
-    kbs = await repo.list_all()
+    kbs = await repo.list_all(scope_condition=scope_condition(KnowledgeBase, principal))
 
     kb_ids = [kb.id for kb in kbs]
     doc_count_by_kb: dict[int, int] = {}
@@ -161,8 +169,15 @@ async def list_kb(
     }
 
 
-async def _get_kb_or_404(db: AsyncSession, kb_id: int) -> KnowledgeBase:
-    kb = await db.scalar(select(KnowledgeBase).where(KnowledgeBase.id == kb_id))
+async def _get_kb_or_404(
+    db: AsyncSession, kb_id: int, principal: ProjectPrincipal
+) -> KnowledgeBase:
+    kb = await db.scalar(
+        select(KnowledgeBase).where(
+            KnowledgeBase.id == kb_id,
+            scope_condition(KnowledgeBase, principal),
+        )
+    )
     if kb is None or kb.enabled is False or kb.index_status == _KB_DELETE_STATUS:
         raise AppError("KB_NOT_FOUND", "知识库不存在", status_code=404)
     return kb
@@ -171,10 +186,10 @@ async def _get_kb_or_404(db: AsyncSession, kb_id: int) -> KnowledgeBase:
 @router.get("/{kb_id}")
 async def get_kb(
     kb_id: int,
-    user_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
-    kb = await _get_kb_or_404(db, kb_id)
+    kb = await _get_kb_or_404(db, kb_id, principal)
     return {"success": True, "data": _serialize_kb(kb)}
 
 
@@ -182,10 +197,10 @@ async def get_kb(
 async def update_kb(
     kb_id: int,
     body: UpdateKbRequest,
-    user_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
-    kb = await _get_kb_or_404(db, kb_id)
+    kb = await _get_kb_or_404(db, kb_id, principal)
     updates: dict[str, object] = {
         key: value
         for key, value in {
@@ -212,11 +227,11 @@ async def upload_kb_cover(
     kb_id: int,
     request: Request,
     file: UploadFile,
-    user_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     """上传知识库封面图（jpg/png/webp），保存到 uploads/ 并记录 cover_path。"""
-    kb = await _get_kb_or_404(db, kb_id)
+    kb = await _get_kb_or_404(db, kb_id, principal)
     settings: Settings = request.app.state.settings
 
     filename = file.filename or "cover.png"
@@ -244,11 +259,11 @@ async def upload_kb_cover(
 async def get_kb_cover(
     kb_id: int,
     request: Request,
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_PROJECT_VIEW)),
     db: AsyncSession = Depends(_session_factory),
 ) -> Response:
-    """读取知识库封面图片（员工可见，全员可读）。"""
-    kb = await _get_kb_or_404(db, kb_id)
+    """读取知识库封面图片（进入应用的用户可见）。"""
+    kb = await _get_kb_or_404(db, kb_id, principal)
     if not kb.cover_path:
         raise AppError("COVER_NOT_FOUND", "知识库未设置封面", status_code=404)
     path = Path(request.app.state.settings.upload.root_dir) / kb.cover_path
@@ -264,11 +279,11 @@ async def get_kb_cover(
 @router.delete("/{kb_id}")
 async def delete_kb(
     kb_id: int,
-    user_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     """删除知识库：级联删除文档与会话，索引标记 deleting 等待异步回收。"""
-    kb = await _get_kb_or_404(db, kb_id)
+    kb = await _get_kb_or_404(db, kb_id, principal)
 
     # 1. 删该库下的消息引用（用新 kb_id 快照列直删，不经过会话子查询）
     await db.execute(sa_delete(Reference).where(
@@ -312,7 +327,7 @@ async def delete_kb(
 async def reindex_kb(
     kb_id: int,
     request: Request,
-    user_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     """重建知识库索引：删除旧 collection，v2 起以 cosine 空间重建。
@@ -321,7 +336,7 @@ async def reindex_kb(
     只能删除后由 ingest worker 在消费新 job 时以 cosine 空间重新创建。
     重建期间 index_status 标记 rebuilding，检索暂时为空属预期行为。
     """
-    kb = await _get_kb_or_404(db, kb_id)
+    kb = await _get_kb_or_404(db, kb_id, principal)
 
     # 1. 删除当前 collection（chromadb 不可用/不存在时静默跳过）
     chroma = getattr(request.app.state, "ingest_chroma", None)
@@ -351,6 +366,8 @@ async def reindex_kb(
         db.add(DocumentJob(
             doc_id=doc.id,
             owner_user_id=doc.owner_user_id,
+            tenant_id=doc.tenant_id,
+            department_id=doc.department_id,
             job_type="ingest",
         ))
     await db.commit()
@@ -363,11 +380,11 @@ async def test_kb(
     kb_id: int,
     body: TestKbRequest,
     request: Request,
-    user_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     """检索测试：从向量库检索 top_k 个 chunk 并返回。"""
-    kb = await _get_kb_or_404(db, kb_id)
+    kb = await _get_kb_or_404(db, kb_id, principal)
 
     settings: Settings = request.app.state.settings
     top_k = body.top_k or settings.rag.top_k

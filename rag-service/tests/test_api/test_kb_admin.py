@@ -294,6 +294,58 @@ async def test_docs_upload_list_status_reindex_delete_flow(
         await engine.dispose()
 
 
+async def test_json_upload_waits_for_mapping_without_creating_ingest_job(
+    migrated_mysql_url: str, upload_root: str
+) -> None:
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        username, kb_id = await _seed_admin(factory)
+        app = create_app(_settings(migrated_mysql_url, upload_root), session_factory=factory)
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000",
+        ) as client:
+            cookie = await _login(client, username)
+            response = await client.post(
+                f"/api/kb/{kb_id}/docs/upload",
+                files={"file": ("records.json", b'[{"title":"hello"}]', "application/json")},
+                cookies={"rag_session": cookie},
+            )
+
+        assert response.status_code == 200, response.text
+        data = response.json()["data"]
+        assert data["status"] == "awaiting_mapping"
+        assert "job_id" not in data
+
+        async with factory() as session:
+            doc = await session.get(Document, data["doc_id"])
+            jobs = (await session.execute(
+                select(DocumentJob).where(DocumentJob.doc_id == data["doc_id"])
+            )).scalars().all()
+        assert doc is not None
+        assert doc.status == "awaiting_mapping"
+        assert (Path(upload_root) / doc.file_path).read_bytes() == b'[{"title":"hello"}]'
+        assert jobs == []
+
+        async with AsyncClient(
+            transport=ASGITransport(app=app), base_url="http://127.0.0.1:8000",
+        ) as client:
+            cookie = await _login(client, username)
+            profile_response = await client.post(
+                f"/api/kb/{kb_id}/json/profile",
+                json={"doc_id": data["doc_id"]},
+                cookies={"rag_session": cookie},
+            )
+        assert profile_response.status_code == 200, profile_response.text
+        profile = profile_response.json()["data"]
+        assert profile["doc_id"] == data["doc_id"]
+        assert profile["source_format"] == "json"
+        assert profile["total_records_estimate"] == 1
+        assert profile["candidates"][0]["suggested_mapping"]["record_types"]
+    finally:
+        await engine.dispose()
+
+
 async def test_docs_endpoints_require_admin(
     migrated_mysql_url: str, upload_root: str
 ) -> None:

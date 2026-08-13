@@ -108,6 +108,62 @@ def test_get_collection_creates_with_cosine_space(monkeypatch: pytest.MonkeyPatc
     assert calls["metadata"] == {"hnsw:space": "cosine"}
 
 
+async def test_update_doc_chunk_regenerates_embedding_and_preserves_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection = _EditableChromaCollection(
+        {"ids": ["chunk-1"], "metadatas": [{"doc_id": 7, "page": 2}]}
+    )
+    relay = _RecordingRelay([0.1, 0.2])
+    retrieval = ChromaRetrieval(object(), relay=relay)
+    monkeypatch.setattr(
+        retrieval,
+        "_get_client",
+        lambda: _SingleCollectionClient(collection),
+    )
+
+    updated = await retrieval.update_doc_chunk(
+        "kb_1_v1", 7, "chunk-1", "Repaired content"
+    )
+
+    assert relay.calls == [["Repaired content"]]
+    assert collection.update_calls == [
+        {
+            "ids": ["chunk-1"],
+            "documents": ["Repaired content"],
+            "embeddings": [[0.1, 0.2]],
+        }
+    ]
+    assert updated == {
+        "chunk_id": "chunk-1",
+        "content": "Repaired content",
+        "doc_id": 7,
+        "page": 2,
+        "score": None,
+    }
+
+
+async def test_update_doc_chunk_rejects_chunk_from_another_document(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    collection = _EditableChromaCollection(
+        {"ids": ["chunk-1"], "metadatas": [{"doc_id": 99}]}
+    )
+    relay = _RecordingRelay([0.1, 0.2])
+    retrieval = ChromaRetrieval(object(), relay=relay)
+    monkeypatch.setattr(
+        retrieval,
+        "_get_client",
+        lambda: _SingleCollectionClient(collection),
+    )
+
+    updated = await retrieval.update_doc_chunk("kb_1_v1", 7, "chunk-1", "text")
+
+    assert updated is None
+    assert relay.calls == []
+    assert collection.update_calls == []
+
+
 async def test_retrieve_filters_chunks_below_similarity_threshold(
     migrated_mysql_url: str,
     monkeypatch: pytest.MonkeyPatch,
@@ -507,6 +563,19 @@ class _RecordingChromaCollection(_FakeChromaCollection):
     def query(self, **kwargs: object) -> dict[str, object]:
         self.query_calls.append(kwargs)
         return super().query(**kwargs)
+
+
+class _EditableChromaCollection:
+    def __init__(self, result: dict[str, object]) -> None:
+        self._result = result
+        self.update_calls: list[dict[str, object]] = []
+
+    def get(self, *, ids: list[str], include: list[str]) -> dict[str, object]:
+        assert include == ["metadatas"]
+        return self._result if ids == self._result.get("ids") else {"ids": []}
+
+    def update(self, **kwargs: object) -> None:
+        self.update_calls.append(kwargs)
 
 
 class _SingleCollectionClient:

@@ -24,6 +24,7 @@ EXPECTED_TABLES = {
     "rag_mapping_template_version",
     "rag_document_mapping",
     "rag_ingest_run",
+    "rag_platform_session",
 }
 
 EXPECTED_DOCUMENT_COLUMNS = {

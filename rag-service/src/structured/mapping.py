@@ -79,9 +79,13 @@ class MappingService:
         self,
         session_factory: async_sessionmaker[AsyncSession],
         user_id: int,
+        tenant_id: str | None = None,
+        department_id: str | None = None,
     ) -> None:
         self._factory = session_factory
         self._user_id = user_id
+        self._tenant_id = tenant_id
+        self._department_id = department_id
 
     async def create_template(self, definition: MappingDefinition) -> MappingTemplate:
         validate_definition(definition)
@@ -90,6 +94,8 @@ class MappingService:
                 name=definition.name or "未命名模板",
                 source_format=definition.source_format,
                 created_by_user_id=self._user_id,
+                tenant_id=self._tenant_id,
+                department_id=self._department_id,
             )
             session.add(template)
             await session.flush()

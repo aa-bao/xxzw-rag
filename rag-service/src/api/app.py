@@ -13,7 +13,9 @@ from src.api.router_auth import router as auth_router
 from src.api.router_chat import router as chat_router
 from src.api.router_docs import router as docs_router
 from src.api.router_kb import router as kb_router
+from src.api.router_platform import router as platform_router
 from src.api.router_settings import router as settings_router
+from src.api.router_structured import router as structured_router
 from src.api.router_users import router as users_router
 from src.db.models import ModelSetting
 from src.ingestion.worker import IngestWorker
@@ -22,6 +24,8 @@ from src.retrieval.chroma import ChromaRetrieval
 from src.shared.config import Settings
 from src.shared.errors import AppError
 from src.shared.runtime import RuntimeModelRelay
+from src.platform.config import PlatformConfig, conformance_mode
+from src.platform.client import ControlPlaneClient
 
 
 def _make_settings_shell(runtime_relay: RuntimeModelRelay):
@@ -36,16 +40,47 @@ def create_app(
     session_factory: async_sessionmaker[AsyncSession] | None = None,
 ) -> FastAPI:
     app = FastAPI(title="Local RAG Knowledge Base")
+    app.state.platform_config = PlatformConfig.load()
+    app.state.conformance_consumed_codes = set()
+    app.state.conformance_sessions = {}
+
+    if conformance_mode():
+        from src.api.router_conformance import router as conformance_router
+        from src.platform.redaction import install_redaction
+        from src.platform.tasks import InMemoryNonceStore
+
+        app.state.conformance_task_store = InMemoryNonceStore()
+        install_redaction()
+        app.include_router(platform_router)
+        app.include_router(conformance_router)
+
+        @app.exception_handler(AppError)
+        async def _conformance_error_handler(request: Request, exc: AppError) -> JSONResponse:
+            return JSONResponse(
+                status_code=exc.status_code,
+                content={"success": False, "error": {"code": exc.code, "message": exc.message}},
+            )
+
+        return app
 
     if settings is None:
         settings = Settings.load(Path(__file__).resolve().parent.parent.parent / "config.yaml")
 
     app.state.settings = settings
+    app.state.control_plane_client = (
+        ControlPlaneClient(app.state.platform_config)
+        if app.state.platform_config.control_plane_base_url
+        else None
+    )
 
     if session_factory is None:
         from src.db.session import create_engine as db_create_engine
+        database_url = settings.database.url.get_secret_value()
+        if app.state.platform_config.database_url:
+            # 平台生产运行：数据库凭据由 Controller 以 secrets 下发（规范 08 §12.1）
+            database_url = app.state.platform_config.database_url
         engine = db_create_engine(
-            settings.database.url.get_secret_value(),
+            database_url,
             pool_size=settings.database.pool_size,
             pool_recycle=settings.database.pool_recycle_seconds,
         )
@@ -112,6 +147,8 @@ def create_app(
         if worker is not None:
             await worker.stop()
         await app.state.model_relay_client._client.aclose()
+        if app.state.control_plane_client is not None:
+            await app.state.control_plane_client.close()
 
     app.include_router(auth_router)
     app.include_router(kb_router)
@@ -119,6 +156,8 @@ def create_app(
     app.include_router(chat_router)
     app.include_router(users_router)
     app.include_router(settings_router)
+    app.include_router(structured_router)
+    app.include_router(platform_router)
 
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:

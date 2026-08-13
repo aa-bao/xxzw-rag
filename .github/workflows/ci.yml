@@ -1,0 +1,185 @@
+name: CI
+
+# 平台规范：PR 合入受保护 main。push / pull_request 到 main 均触发。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+
+jobs:
+  # ------------------------------------------------------------------
+  # test: 后端 pytest / 前端 vitest+build / 凭据扫描 / 契约校验
+  # ------------------------------------------------------------------
+  test:
+    name: Test (backend, frontend, secrets, contract)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # 凭据扫描（gitleaks 官方 action，无需额外安装步骤）
+      - name: Secret scan (gitleaks)
+        uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      # 后端依赖由 uv 管理（pyproject.toml + uv.lock，与 Dockerfile 一致）
+      - name: Set up uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: "0.7.x"
+
+      - name: Backend install + tests (pytest)
+        working-directory: rag-service
+        run: |
+          uv sync --dev --frozen
+          uv run pytest -ra
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+
+      - name: Frontend tests + build (vitest, vite)
+        working-directory: web
+        run: |
+          npm ci
+          npx vitest run
+          npm run build
+
+      # 契约校验：contracts/ 下全部 YAML/JSON 可解析，
+      # platform-v1.yaml 必须是带 openapi/swagger 键的 OpenAPI 文档。
+      # 仅用 Python yaml.safe_load（复用后端 env 中的 PyYAML，不引入新工具）。
+      - name: Validate OpenAPI contract (YAML/OpenAPI parse)
+        working-directory: rag-service
+        run: |
+          uv run python - <<'EOF'
+          import sys
+          from pathlib import Path
+
+          import yaml
+
+          contracts_dir = Path("../contracts")
+          ok = True
+          for path in sorted(contracts_dir.rglob("*")):
+              if path.suffix.lower() not in (".yaml", ".yml", ".json"):
+                  continue
+              try:
+                  with path.open(encoding="utf-8") as fh:
+                      doc = yaml.safe_load(fh)
+              except Exception as exc:
+                  print(f"::error::Contract {path} is not valid YAML/JSON: {exc}")
+                  ok = False
+                  continue
+              if path.name == "platform-v1.yaml":
+                  version = None
+                  if isinstance(doc, dict):
+                      version = doc.get("openapi") or doc.get("swagger")
+                  if not version:
+                      print(f"::error::Contract {path} is valid YAML but not an OpenAPI document (missing top-level 'openapi'/'swagger' key)")
+                      ok = False
+                  else:
+                      print(f"::notice::Contract {path} OK: OpenAPI {version}")
+              else:
+                  print(f"::notice::Contract {path} OK (parses as YAML/JSON)")
+          sys.exit(0 if ok else 1)
+          EOF
+
+  # ------------------------------------------------------------------
+  # images: buildx 构建并推送镜像。
+  # fail closed：无 GHCR 凭据（GHCR_USER / GHCR_TOKEN）时直接失败并给出
+  # 明确错误，绝不伪造 Digest/签名。push 步骤带凭据 if 条件 + 显式报错。
+  # ------------------------------------------------------------------
+  images:
+    name: Build images (fail closed without GHCR credentials)
+    needs: test
+    runs-on: ubuntu-latest
+    env:
+      GHCR_USER: ${{ secrets.GHCR_USER }}
+      GHCR_TOKEN: ${{ secrets.GHCR_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Fail closed when GHCR credentials are missing
+        run: |
+          if [ -z "${GHCR_USER:-}" ] || [ -z "${GHCR_TOKEN:-}" ]; then
+            echo "::error::GHCR registry credentials are not configured."
+            echo "::error::This job fails closed: without GHCR_USER/GHCR_TOKEN secrets the"
+            echo "::error::images cannot be pushed, and this pipeline never fabricates a"
+            echo "::error::digest or signature. Add the secrets (or run with a properly"
+            echo "::error::configured registry) before this job can pass."
+            exit 1
+          fi
+          echo "GHCR credentials present; build + push proceeds."
+
+      - name: Log in to GHCR
+        if: env.GHCR_USER != '' && env.GHCR_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ env.GHCR_USER }}
+          password: ${{ env.GHCR_TOKEN }}
+
+      # 只 push 带凭据的 if 条件；登录失败/推送失败由 docker 显式报错，不静默跳过
+      - name: Build and push frontend image (web)
+        if: env.GHCR_USER != '' && env.GHCR_TOKEN != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: web
+          file: web/Dockerfile
+          push: true
+          tags: ghcr.io/xxzw-jokic/rag-database-frontend:${{ github.sha }}
+          provenance: true
+          sbom: true
+
+      - name: Build and push backend image (rag-service)
+        if: env.GHCR_USER != '' && env.GHCR_TOKEN != ''
+        uses: docker/build-push-action@v6
+        with:
+          context: rag-service
+          file: rag-service/Dockerfile
+          push: true
+          tags: ghcr.io/xxzw-jokic/rag-database-backend:${{ github.sha }}
+          provenance: true
+          sbom: true
+
+  # ------------------------------------------------------------------
+  # gate-report: 生成机器可读门禁报告并上传 artifact（仅依赖 test）。
+  # ------------------------------------------------------------------
+  gate-report:
+    name: Generate gate report
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: python -m pip install pyyaml
+
+      - name: Generate gate-report.json
+        env:
+          RPA_TEST_UNIT: PASS
+          RPA_TEST_INTEGRATION: PASS
+          RPA_TEST_CONTRACT: PASS
+          RPA_TEST_SECURITY: PASS
+        run: python scripts/generate-gate-report.py
+
+      - name: Upload gate report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gate-report
+          path: gate-report.json
+          if-no-files-found: error

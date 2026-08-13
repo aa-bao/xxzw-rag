@@ -3,7 +3,8 @@
 本机多用户 RAG（检索增强生成）知识库：在一台机器上为多个用户提供私有文档管理、检索与问答。
 
 - `rag-service/` — Python FastAPI 后端（SQLAlchemy + MySQL + Chroma + 模型中转）
-- `web/` — Vue 3 + TypeScript + Element Plus 前端（Vite）
+- `web/` — Vue 3 + TypeScript + Element Plus 前端（Vite，生产由非 root Nginx 提供）
+- `rpa-application.yaml` — TYT RPA 独立应用清单；资源与副作用见 `RESOURCE.md`
 
 业务术语与产品边界见 [CONTEXT.md](CONTEXT.md)，架构决策见 [docs/adr/](docs/adr/)。
 
@@ -71,3 +72,31 @@ cd rag-service
 cd ../web
 npm test
 ```
+
+## TYT RPA 平台接入
+
+平台探针：`GET /platform/health`、`GET /platform/readiness`、`GET /platform/version`（版本元数据
+来自 `RPA_*` 环境变量，不含密钥）。前端以相对路径构建（`basePathMode: RELATIVE`），支持部署在
+未知同源子路径，`embedded=true` 时隐藏自身全局侧栏/退出入口/用户管理入口。
+
+已实现（本仓库内）：
+
+- **平台 SSO**：`POST /platform/sso/bootstrap` 以表单 `code`/`state`/`codeVerifier`/`redirectUri`
+  （可选 `route`，仅接受同源相对路径）兑换一次性授权码 + PKCE，建立独立 `rag_database_session`
+  HttpOnly Cookie 会话（最长 30 分钟，至少每 5 分钟向控制面刷新权限；停用/权限撤销失败关闭）。
+- **身份与权限**：`ProjectPrincipal` 请求级身份；平台 ID 全部为字符串（19 位雪花值不丢精度）；
+  后端逐接口校验 `rag-database:*` 权限字符（真实 403）。TEST/PRODUCTION 只接受平台项目会话。
+- **数据隔离**：租户 + dataScope（`ALL`/`RESTRICTED`）过滤；`RESTRICTED` 空集合返回空集；
+  创建记录服务端写入 tenant/department/owner，拒绝请求体覆盖；后台任务归属显式传播。
+- **Controller 密钥**：生产从 `/run/tyt-rpa/secrets/` 按文件名读取（控制面身份、HMAC、TLS CA、
+  数据库运行凭据），非密钥标识走 `RPA_*` 环境变量；HMAC canonical string 顺序与规范严格一致。
+- **Conformance**：`RPA_CONFORMANCE_MODE=true` 无数据库/无模型启动，`contracts/platform-conformance-v1.json`
+  固定 13 个黑盒场景（SSO/HMAC/Task JWT/幂等/脱敏），进程内 Map 幂等。
+- **CI**：`.github/workflows/ci.yml` 跑测试/构建/凭据扫描并生成机器可读 `gate-report.json`
+  （scripts/generate-gate-report.py，无凭据时镜像推送失败关闭，绝不伪造 Digest/签名）。
+
+当前状态：**仓库内门禁完成、TEST 可接入**。发布动作（TEST/PRODUCTION Release、Registry 推送、
+Cosign 签名、真实主系统黑盒验收）需要平台侧 Controller 凭据，由平台侧发起；在真实发布与黑盒
+验收通过前不得宣称"生产已上线"。本地 Compose 会分别构建前端与后端组件，统一从
+`http://127.0.0.1:8000` 访问；Conformance 验证用 `docker compose -f docker-compose.yml
+-f docker-compose.conformance.yml up rag-conformance`。

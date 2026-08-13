@@ -11,9 +11,10 @@ from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies import _session_factory, require_admin
+from src.api.dependencies import _session_factory, require_permission
 from src.db.repositories import ModelSettingRepository
 from src.models.client import ModelError
+from src.platform.principal import PERMISSION_SETTINGS_MANAGE, ProjectPrincipal
 from src.shared.errors import AppError
 from src.shared.runtime import RuntimeModelRelay
 
@@ -86,7 +87,7 @@ def _apply_update(runtime: RuntimeModelRelay, body: UpdateModelSettingsRequest) 
 @router.get("/models")
 async def get_model_settings(
     request: Request,
-    admin_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_SETTINGS_MANAGE)),
 ) -> dict[str, object]:
     runtime: RuntimeModelRelay = request.app.state.runtime_relay
     return _serialize(runtime)
@@ -96,7 +97,7 @@ async def get_model_settings(
 async def update_model_settings(
     body: UpdateModelSettingsRequest,
     request: Request,
-    admin_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_SETTINGS_MANAGE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     runtime: RuntimeModelRelay = request.app.state.runtime_relay
@@ -143,7 +144,7 @@ async def update_model_settings(
 async def test_model_settings(
     body: TestModelSettingsRequest,
     request: Request,
-    admin_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_SETTINGS_MANAGE)),
 ) -> dict[str, object]:
     """用传入配置试连模型服务；失败返回 200 包裹的错误（不抛 500）。"""
     runtime: RuntimeModelRelay = request.app.state.runtime_relay

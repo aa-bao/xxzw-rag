@@ -60,6 +60,8 @@ class KnowledgeBaseRepository:
         embedding_dimension: int,
         chunk_size: int,
         overlap: int,
+        tenant_id: str | None = None,
+        department_id: str | None = None,
     ) -> KnowledgeBase:
         if not name.strip():
             raise AppError("KB_NAME_REQUIRED", "知识库名称不能为空")
@@ -70,6 +72,8 @@ class KnowledgeBaseRepository:
 
         kb = KnowledgeBase(
             owner_user_id=owner_user_id,
+            tenant_id=tenant_id,
+            department_id=department_id,
             name=name.strip(),
             description=description.strip() if description else None,
             chunk_size=chunk_size,
@@ -85,11 +89,14 @@ class KnowledgeBaseRepository:
         await self._session.refresh(kb)
         return kb
 
-    async def list_all(self) -> list[KnowledgeBase]:
-        """全员可见：返回所有启用中的知识库，不按 owner 过滤。"""
+    async def list_all(self, scope_condition=None) -> list[KnowledgeBase]:
+        """返回启用中的知识库（按租户与 dataScope 过滤）。"""
+        conditions = [KnowledgeBase.enabled == True]
+        if scope_condition is not None:
+            conditions.append(scope_condition)
         result = await self._session.execute(
             select(KnowledgeBase)
-            .where(KnowledgeBase.enabled == True)
+            .where(*conditions)
             .order_by(KnowledgeBase.updated_at.desc())
         )
         return list(result.scalars().all())

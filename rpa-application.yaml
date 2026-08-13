@@ -1,0 +1,70 @@
+apiVersion: tyt-rpa/v1
+appKey: rag-database
+displayName: AI 工作台
+description: 多用户私有 RAG 知识库、文档检索与问答工作台
+integrationMode: EMBEDDED_APP
+
+components:
+  frontend:
+    type: WEB_FRONTEND
+    path: web
+    deployTarget: SERVER
+    image: ghcr.io/xxzw-jokic/rag-database-frontend
+    basePathMode: RELATIVE
+    resources:
+      cpus: 0.5
+      memoryMb: 256
+      pidsLimit: 128
+      tmpfsMb: 32
+  backend:
+    type: WEB_BACKEND
+    path: rag-service
+    deployTarget: SERVER
+    image: ghcr.io/xxzw-jokic/rag-database-backend
+    port: 8000
+    healthPath: /platform/health
+    readinessPath: /platform/readiness
+    versionPath: /platform/version
+    resources:
+      cpus: 1
+      memoryMb: 1024
+      pidsLimit: 256
+      tmpfsMb: 128
+
+database:
+  primarySchema: rag
+
+permissions:
+  - code: rag-database:project:view
+    name: 进入 AI 工作台
+  - code: rag-database:knowledge-base:manage
+    name: 管理知识库与文档
+  - code: rag-database:chat:use
+    name: 使用知识库问答
+  - code: rag-database:settings:manage
+    name: 管理模型与用户设置
+
+navigation:
+  - key: rag-knowledge-base
+    name: RAG 知识库
+    children:
+      - key: knowledge-bases
+        name: 知识库
+        route: /kb
+        permission: rag-database:knowledge-base:manage
+      - key: chat
+        name: 对话
+        route: /chat
+        permission: rag-database:chat:use
+      - key: mapping-templates
+        name: 映射模板
+        route: /settings/mapping-templates
+        permission: rag-database:knowledge-base:manage
+      - key: settings
+        name: 设置
+        route: /settings
+        permission: rag-database:settings:manage
+      - key: users
+        name: 用户管理
+        route: /settings/users
+        permission: rag-database:settings:manage

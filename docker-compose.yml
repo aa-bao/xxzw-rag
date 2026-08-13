@@ -17,8 +17,8 @@ services:
 
   rag:
     build:
-      context: .
-      dockerfile: rag-service/Dockerfile
+      context: rag-service
+      dockerfile: Dockerfile
     environment:
       DATABASE_URL: mysql+asyncmy://root:${MYSQL_ROOT_PASSWORD}@mysql:3306/rag
       MODEL_RELAY_BASE_URL: ${MODEL_RELAY_BASE_URL}
@@ -27,15 +27,43 @@ services:
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
       CHAT_MODEL: ${CHAT_MODEL}
-    ports:
-      - "127.0.0.1:8000:8000"
+      RPA_APP_KEY: rag-database
+      RPA_ENVIRONMENT: LOCAL
+      RPA_RELEASE_VERSION: dev
+      RPA_SOURCE_COMMIT: local
+    expose:
+      - "8000"
     depends_on:
       mysql:
         condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/platform/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
     volumes:
-      - uploads:/app/data/uploads
-      - chroma:/app/data/chroma
-      - fts:/app/data/fts
+      - uploads:/opt/tyt-rpa/app/data/uploads
+      - chroma:/opt/tyt-rpa/app/data/chroma
+      - fts:/opt/tyt-rpa/app/data/fts
+
+  web:
+    build:
+      context: web
+      dockerfile: Dockerfile
+    environment:
+      BACKEND_ORIGIN: http://rag:8000
+    ports:
+      - "127.0.0.1:8000:8080"
+    depends_on:
+      rag:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--spider", "http://127.0.0.1:8080/platform/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
 
 volumes:
   mysqldata:

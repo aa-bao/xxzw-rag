@@ -1,0 +1,220 @@
+{
+  "appKey": "rag-database",
+  "schemaVersion": "v1",
+  "description": "统一黑盒契约门禁场景定义（规范 11 §7.1）。夹具以 ${ENV:名称} 引用，必须为门禁夹具表中的名称；引用表外名称将导致整个门禁失败。",
+  "basePath": "",
+  "scenarios": [
+    {
+      "name": "SSO_CODE_ONCE",
+      "method": "POST",
+      "path": "/platform/sso/bootstrap",
+      "contentType": "application/x-www-form-urlencoded",
+      "body": {
+        "code": "${ENV:TEST_AUTH_CODE}",
+        "state": "${ENV:TEST_AUTH_STATE}",
+        "codeVerifier": "${ENV:TEST_CODE_VERIFIER}",
+        "redirectUri": "${ENV:TEST_REDIRECT_URI}"
+      },
+      "expectedStatus": 200,
+      "repeat": {
+        "description": "一次性授权码：第二次兑换必须拒绝",
+        "expectedStatus": 401
+      }
+    },
+    {
+      "name": "SESSION_EXPIRED",
+      "method": "GET",
+      "path": "/platform/session",
+      "headers": {
+        "X-Test-Session": "${ENV:TEST_EXPIRED_SESSION}"
+      },
+      "expectedStatus": 401
+    },
+    {
+      "name": "PERMISSION_ALLOWED",
+      "method": "GET",
+      "path": "/api/rpa/conformance/permissions",
+      "headers": {
+        "X-Test-Session": "${ENV:TEST_ALLOWED_SESSION}"
+      },
+      "expectedStatus": 200
+    },
+    {
+      "name": "PERMISSION_DENIED",
+      "method": "GET",
+      "path": "/api/rpa/conformance/permissions",
+      "headers": {
+        "X-Test-Session": "${ENV:TEST_DENIED_SESSION}"
+      },
+      "expectedStatus": 403
+    },
+    {
+      "name": "TASK_JWT_VALID",
+      "method": "POST",
+      "path": "/api/rpa/tasks",
+      "headers": {
+        "X-Task-Jwt": "${ENV:TEST_TASK_JWT}",
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "task-jwt-valid"
+      },
+      "body": {
+        "businessRequestId": "REQ-TASK-JWT-VALID",
+        "taskType": "DOCUMENT_INGEST"
+      },
+      "expectedStatus": 202
+    },
+    {
+      "name": "TASK_JWT_STALE",
+      "method": "POST",
+      "path": "/api/rpa/tasks",
+      "headers": {
+        "X-Task-Jwt": "${ENV:TEST_STALE_TASK_JWT}",
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "task-jwt-stale"
+      },
+      "body": {
+        "businessRequestId": "REQ-TASK-JWT-STALE",
+        "taskType": "DOCUMENT_INGEST"
+      },
+      "expectedStatus": 401
+    },
+    {
+      "name": "TASK_JWT_CANCELLED",
+      "method": "POST",
+      "path": "/api/rpa/tasks",
+      "headers": {
+        "X-Task-Jwt": "${ENV:TEST_CANCELLED_TASK_JWT}",
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "task-jwt-cancelled"
+      },
+      "body": {
+        "businessRequestId": "REQ-TASK-JWT-CANCELLED",
+        "taskType": "DOCUMENT_INGEST"
+      },
+      "expectedStatus": 401
+    },
+    {
+      "name": "HMAC_VALID",
+      "method": "POST",
+      "path": "/api/rpa/tasks",
+      "headers": {
+        "X-Task-Jwt": "${ENV:TEST_TASK_JWT}",
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "hmac-valid"
+      },
+      "body": {
+        "businessRequestId": "REQ-HMAC-VALID",
+        "taskType": "DOCUMENT_INGEST"
+      },
+      "expectedStatus": 202
+    },
+    {
+      "name": "HMAC_NONCE_REPLAY",
+      "method": "POST",
+      "path": "/api/rpa/tasks",
+      "headers": {
+        "X-Task-Jwt": "${ENV:TEST_TASK_JWT}",
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "hmac-nonce-replay",
+        "X-Nonce": "replay-nonce-0001"
+      },
+      "body": {
+        "businessRequestId": "REQ-HMAC-NONCE-REPLAY",
+        "taskType": "DOCUMENT_INGEST"
+      },
+      "expectedStatus": 202,
+      "repeat": {
+        "description": "同一 nonce 重放必须拒绝",
+        "headers": {
+          "X-Nonce": "replay-nonce-0001"
+        },
+        "expectedStatus": 401
+      }
+    },
+    {
+      "name": "HMAC_CLOCK_SKEW",
+      "method": "POST",
+      "path": "/api/rpa/tasks",
+      "headers": {
+        "X-Task-Jwt": "${ENV:TEST_TASK_JWT}",
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "hmac-clock-skew",
+        "X-Timestamp": "1700000000000"
+      },
+      "body": {
+        "businessRequestId": "REQ-HMAC-CLOCK-SKEW",
+        "taskType": "DOCUMENT_INGEST"
+      },
+      "expectedStatus": 401
+    },
+    {
+      "name": "TASK_IDEMPOTENCY",
+      "method": "POST",
+      "path": "/api/rpa/tasks",
+      "headers": {
+        "X-Task-Jwt": "${ENV:TEST_TASK_JWT}",
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "idem-task-0001"
+      },
+      "body": {
+        "businessRequestId": "REQ-IDEM-TASK",
+        "taskType": "DOCUMENT_INGEST"
+      },
+      "expectedStatus": 202,
+      "repeat": {
+        "description": "相同 Idempotency-Key 不重复创建，返回同一 taskId",
+        "expectedStatus": 202,
+        "sameDataField": "taskId"
+      }
+    },
+    {
+      "name": "RESULT_IDEMPOTENCY",
+      "method": "POST",
+      "path": "/api/rpa/tasks/results",
+      "headers": {
+        "X-Project-Client-Id": "${ENV:TEST_HMAC_CLIENT_ID}",
+        "X-Project-Secret-Version": "${ENV:TEST_HMAC_SECRET_VERSION}",
+        "X-Project-Signature-Version": "v1",
+        "Idempotency-Key": "idem-result-0001"
+      },
+      "body": {
+        "taskId": "task-result-idem-0001",
+        "businessRequestId": "REQ-IDEM-RESULT",
+        "status": "SUCCEEDED"
+      },
+      "expectedStatus": 200,
+      "repeat": {
+        "description": "结果重复提交返回同一 resultId",
+        "expectedStatus": 200,
+        "sameDataField": "resultId"
+      }
+    },
+    {
+      "name": "LOG_REDACTION",
+      "method": "GET",
+      "path": "/platform/health",
+      "headers": {
+        "X-Test-Sentinel": "${ENV:TEST_SECRET_SENTINEL}"
+      },
+      "description": "日志与错误响应不得回显夹具密钥；服务端日志脱敏安装于 Conformance 启动路径",
+      "expectedStatus": 200,
+      "checkLogs": {
+        "mustNotContain": "${ENV:TEST_SECRET_SENTINEL}"
+      }
+    }
+  ]
+}

@@ -1,0 +1,42 @@
+# Conformance 无数据库启动（规范 11 §15.14）：
+# 仅注入 RPA_* 与 TEST_*（门禁夹具），无任何 DATABASE_* 参数、无模型服务。
+# 验证：三个平台探针 + 13 个黑盒场景（contracts/platform-conformance-v1.json）。
+#
+# 用法：
+#   docker compose -f docker-compose.yml -f docker-compose.conformance.yml up --build rag-conformance
+#   curl http://127.0.0.1:8080/platform/health   → {"status":"healthy"}
+#   curl http://127.0.0.1:8080/platform/readiness → {"status":"ready"}
+#   curl http://127.0.0.1:8080/platform/version
+services:
+  rag-conformance:
+    build:
+      context: rag-service
+      dockerfile: Dockerfile
+    environment:
+      RPA_CONFORMANCE_MODE: "true"
+      RPA_APP_KEY: rag-database
+      RPA_RELEASE_VERSION: conformance
+      RPA_SOURCE_COMMIT: local
+      RPA_CONTROL_PLANE_PUBLIC_ORIGIN: http://127.0.0.1:9000
+      PORT: "8000"
+      # 门禁夹具仅从环境注入；以下为本地验收默认值，真实门禁由中央 runner 下发
+      TEST_AUTH_CODE: ${TEST_AUTH_CODE:-local-acceptance-code}
+      TEST_AUTH_STATE: ${TEST_AUTH_STATE:-local-acceptance-state}
+      TEST_CODE_VERIFIER: ${TEST_CODE_VERIFIER:-local-acceptance-verifier}
+      TEST_REDIRECT_URI: ${TEST_REDIRECT_URI:-http://127.0.0.1:8080/}
+      TEST_ALLOWED_SESSION: ${TEST_ALLOWED_SESSION:-sess-allowed-local}
+      TEST_DENIED_SESSION: ${TEST_DENIED_SESSION:-sess-denied-local}
+      TEST_EXPIRED_SESSION: ${TEST_EXPIRED_SESSION:-sess-expired-local}
+      TEST_HMAC_CLIENT_ID: ${TEST_HMAC_CLIENT_ID:-conformance-client}
+      TEST_HMAC_SECRET: ${TEST_HMAC_SECRET:-conformance-secret}
+      TEST_HMAC_SECRET_VERSION: ${TEST_HMAC_SECRET_VERSION:-1}
+      TEST_SECRET_SENTINEL: ${TEST_SECRET_SENTINEL:-sentinel-local}
+    ports:
+      - "127.0.0.1:8080:8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/platform/health')"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 30s
+    # 无数据库、无模型服务：不依赖 mysql 服务，独立启动

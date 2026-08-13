@@ -18,3 +18,6 @@ rag-service/cookies.txt
 .serena/
 test/
 .worktrees/
+
+# CI 门禁报告产物（scripts/generate-gate-report.py 默认输出）
+/gate-report.json

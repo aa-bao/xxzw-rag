@@ -9,10 +9,12 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.api.dependencies import _session_factory, require_user
+from src.api.dependencies import _session_factory, require_permission
 from src.db.models import Conversation, ConversationKb, KnowledgeBase, Message, QueryLog, Reference
 from src.db.repositories import KnowledgeBaseRepository
+from src.db.scope import scope_condition
 from src.engine.query import QueryEngine
+from src.platform.principal import PERMISSION_CHAT_USE, ProjectPrincipal
 from src.models.client import ModelRelayClient
 from src.models.llm import ChatClient
 from src.retrieval.chroma import ChromaRetrieval
@@ -62,27 +64,35 @@ def _build_query_engine(request: Request) -> QueryEngine:
 @router.post("/conversations")
 async def create_conversation(
     body: CreateConversationRequest,
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_CHAT_USE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     if len(set(body.kb_ids)) != len(body.kb_ids):
         raise AppError("KB_DUPLICATED", "知识库重复", status_code=422)
     kb_repo = KnowledgeBaseRepository(db)
-    owned = await kb_repo.get_owned_many(body.kb_ids, user_id)
+    owned = await kb_repo.get_owned_many(body.kb_ids, principal.internal_user_id)
     # 任一库非本人拥有则整体 404
     if len(owned) != len(set(body.kb_ids)):
         raise AppError("KB_NOT_FOUND", "知识库不存在", status_code=404)
 
     conv = Conversation(
         id=uuid.uuid4().hex,
-        owner_user_id=user_id,
+        owner_user_id=principal.internal_user_id,
+        tenant_id=principal.tenant_id or None,
+        department_id=principal.department_id or None,
         title=None,
     )
     db.add(conv)
     await db.flush()  # flush 后拿到 id，再写关联行
     db.add_all(
         [
-            ConversationKb(conversation_id=conv.id, kb_id=kid, owner_user_id=user_id)
+            ConversationKb(
+                conversation_id=conv.id,
+                kb_id=kid,
+                owner_user_id=principal.internal_user_id,
+                tenant_id=principal.tenant_id or None,
+                department_id=principal.department_id or None,
+            )
             for kid in body.kb_ids
         ]
     )
@@ -102,19 +112,27 @@ async def create_conversation(
 
 @router.get("/history")
 async def list_conversations(
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_CHAT_USE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     result = await db.execute(
         select(Conversation)
-        .where(Conversation.owner_user_id == user_id)
+        .where(
+            Conversation.owner_user_id == principal.internal_user_id,
+            scope_condition(Conversation, principal),
+        )
         .order_by(Conversation.updated_at.desc())
     )
     convs = result.scalars().all()
 
     # 全部关联行按会话分组，一次查全部知识库名
     links = (
-        await db.scalars(select(ConversationKb).where(ConversationKb.owner_user_id == user_id))
+        await db.scalars(
+            select(ConversationKb).where(
+                ConversationKb.owner_user_id == principal.internal_user_id,
+                scope_condition(ConversationKb, principal),
+            )
+        )
     ).all()
     kb_ids_by_conv: dict[str, list[int]] = {}
     for link in links:
@@ -122,7 +140,12 @@ async def list_conversations(
     all_kb_ids = {kb_id for ids in kb_ids_by_conv.values() for kb_id in ids}
     kb_names: dict[int, str] = {}
     if all_kb_ids:
-        kbs = await db.scalars(select(KnowledgeBase).where(KnowledgeBase.id.in_(all_kb_ids)))
+        kbs = await db.scalars(
+            select(KnowledgeBase).where(
+                KnowledgeBase.id.in_(all_kb_ids),
+                scope_condition(KnowledgeBase, principal),
+            )
+        )
         kb_names = {kb.id: kb.name for kb in kbs}
 
     entries: list[dict[str, object]] = []
@@ -151,13 +174,14 @@ async def list_conversations(
 @router.get("/conversations/{conversation_id}/messages")
 async def get_messages(
     conversation_id: str,
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_CHAT_USE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conversation_id,
-            Conversation.owner_user_id == user_id,
+            Conversation.owner_user_id == principal.internal_user_id,
+            scope_condition(Conversation, principal),
         )
     )
     if conv is None:
@@ -224,13 +248,14 @@ async def get_messages(
 @router.delete("/conversations/{conversation_id}")
 async def delete_conversation(
     conversation_id: str,
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_CHAT_USE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conversation_id,
-            Conversation.owner_user_id == user_id,
+            Conversation.owner_user_id == principal.internal_user_id,
+            scope_condition(Conversation, principal),
         )
     )
     if conv is None:
@@ -246,13 +271,14 @@ async def delete_conversation(
 async def rename_conversation(
     conversation_id: str,
     body: RenameConversationRequest,
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_CHAT_USE)),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == conversation_id,
-            Conversation.owner_user_id == user_id,
+            Conversation.owner_user_id == principal.internal_user_id,
+            scope_condition(Conversation, principal),
         )
     )
     if conv is None:
@@ -280,14 +306,15 @@ async def rename_conversation(
 async def query(
     body: QueryRequest,
     request: Request,
-    user_id: int = Depends(require_user),
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_CHAT_USE)),
     db: AsyncSession = Depends(_session_factory),
 ):
     # Check conversation ownership
     conv = await db.scalar(
         select(Conversation).where(
             Conversation.id == body.conversation_id,
-            Conversation.owner_user_id == user_id,
+            Conversation.owner_user_id == principal.internal_user_id,
+            scope_condition(Conversation, principal),
         )
     )
     if conv is None:
@@ -308,7 +335,12 @@ async def query(
     ).all()
     if not kb_ids:
         raise AppError("KB_NOT_FOUND", "知识库不存在", status_code=404)
-    kb = await db.scalar(select(KnowledgeBase).where(KnowledgeBase.id == kb_ids[0]))
+    kb = await db.scalar(
+        select(KnowledgeBase).where(
+            KnowledgeBase.id == kb_ids[0],
+            scope_condition(KnowledgeBase, principal),
+        )
+    )
     if kb is None:
         raise AppError("KB_NOT_FOUND", "知识库不存在", status_code=404)
     top_k = kb.top_k
@@ -320,7 +352,7 @@ async def query(
             db,
             conversation_id=body.conversation_id,
             question=body.question,
-            user_id=user_id,
+            user_id=principal.internal_user_id,
             kb_ids=kb_ids,
             top_k=top_k,
             similarity_threshold=float(kb.similarity_threshold),

@@ -102,6 +102,11 @@ class ChromaRetrieval(RetrievalModule):
                 "title": c.get("title") or "",
                 "page": c.get("page"),
                 "chunk_index": c.get("chunk_index"),
+                "record_id": c.get("record_id") or "",
+                "parent_id": c.get("parent_id") or "",
+                "record_type": c.get("record_type") or "",
+                "source_pointer": c.get("source_pointer") or "",
+                "mapping_version_id": c.get("mapping_version_id") or 0,
             }
             for c in chunks
         ]

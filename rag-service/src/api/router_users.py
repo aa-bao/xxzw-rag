@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from src.api.dependencies import _session_factory, require_admin
 from src.auth.passwords import PasswordHasher
 from src.db.models import User
+from src.platform.principal import ProjectPrincipal
 from src.shared.errors import AppError
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -52,7 +53,7 @@ def _require_password_length(password: str) -> None:
 @router.post("")
 async def create_user(
     body: CreateUserRequest,
-    admin_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_admin),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     username = body.username.strip()
@@ -82,7 +83,7 @@ async def create_user(
 
 @router.get("")
 async def list_users(
-    admin_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_admin),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     result = await db.execute(select(User).order_by(User.created_at.asc()))
@@ -94,14 +95,14 @@ async def list_users(
 async def update_user(
     user_id: int,
     body: UpdateUserRequest,
-    admin_id: int = Depends(require_admin),
+    principal: ProjectPrincipal = Depends(require_admin),
     db: AsyncSession = Depends(_session_factory),
 ) -> dict[str, object]:
     user = await db.scalar(select(User).where(User.id == user_id))
     if user is None:
         raise AppError("USER_NOT_FOUND", "用户不存在", status_code=404)
 
-    if user_id == admin_id:
+    if user_id == principal.internal_user_id:
         if body.role is not None and body.role != user.role:
             raise AppError("SELF_ROLE_CHANGE_FORBIDDEN", "不能修改当前登录账号的角色")
         if body.status == "disabled":
