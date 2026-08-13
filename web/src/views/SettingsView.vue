@@ -158,6 +158,7 @@ import {
   updateModelSettings,
   type ModelSettings,
 } from '../api/settings'
+import { applicationUrl } from '../platform'
 
 type Health = 'unknown' | 'online' | 'offline'
 
@@ -332,7 +333,7 @@ async function handleTestEmbed() {
 /* ── 健康检查 ── */
 async function checkHealth() {
   try {
-    const resp = await fetch('/api/health/live', { credentials: 'same-origin' })
+    const resp = await fetch(applicationUrl('api/health/live'), { credentials: 'same-origin' })
     if (resp.ok) {
       const body = (await resp.json()) as { success?: boolean; data?: { status?: string } }
       health.value = body.success && body.data?.status === 'live' ? 'online' : 'offline'

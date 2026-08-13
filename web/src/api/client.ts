@@ -1,4 +1,5 @@
 import type { Kb } from '../types/kb'
+import { applicationUrl, redirectToSessionExpiry } from '../platform'
 
 export interface ApiResponse<T = unknown> {
   success: boolean
@@ -7,14 +8,26 @@ export interface ApiResponse<T = unknown> {
 }
 
 class Client {
-  private base = '/api'
+  private endpoint(url: string): string {
+    return applicationUrl(`api${url}`)
+  }
+
+  /**
+   * 会话过期（401）统一处理：嵌入模式回主系统，独立部署回 /login。
+   * 登录接口自身的 401（密码错误）不触发跳转；不向 URL 写入任何错误信息或 token。
+   */
+  private redirectOnUnauthorized(requestUrl: string): void {
+    if (requestUrl.includes('/auth/login')) return
+    redirectToSessionExpiry()
+  }
 
   private async request<T>(url: string, init?: RequestInit): Promise<ApiResponse<T>> {
-    const resp = await fetch(`${this.base}${url}`, {
+    const resp = await fetch(this.endpoint(url), {
       ...init,
       credentials: 'same-origin' as RequestCredentials,
       headers: { 'Content-Type': 'application/json', ...init?.headers },
     })
+    if (resp.status === 401) this.redirectOnUnauthorized(url)
     const body = await resp.json()
     if (!resp.ok) {
       throw body
@@ -52,11 +65,12 @@ class Client {
   }
 
   async upload<T>(url: string, form: FormData): Promise<ApiResponse<T>> {
-    const resp = await fetch(`${this.base}${url}`, {
+    const resp = await fetch(this.endpoint(url), {
       method: 'POST',
       credentials: 'same-origin',
       body: form,
     })
+    if (resp.status === 401) this.redirectOnUnauthorized(url)
     const body = await resp.json()
     if (!resp.ok) {
       throw body
@@ -66,12 +80,14 @@ class Client {
 
   /** SSE 查询：返回原始 Response，由调用方用 streamSse 消费 */
   async queryRaw(url: string, body: unknown): Promise<Response> {
-    return fetch(`${this.base}${url}`, {
+    const resp = await fetch(this.endpoint(url), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     })
+    if (resp.status === 401) this.redirectOnUnauthorized(url)
+    return resp
   }
 
   async login(username: string, password: string) {
@@ -103,11 +119,12 @@ class Client {
   async uploadDoc(kbId: number, file: File) {
     const form = new FormData()
     form.append('file', file)
-    const resp = await fetch(`${this.base}/docs/upload?kb_id=${kbId}`, {
+    const resp = await fetch(this.endpoint(`/docs/upload?kb_id=${kbId}`), {
       method: 'POST',
       credentials: 'same-origin',
       body: form,
     })
+    if (resp.status === 401) this.redirectOnUnauthorized(`/docs/upload`)
     return resp.json() as Promise<ApiResponse<{ doc_id: number; job_id: number; status: string }>>
   }
 
@@ -127,11 +144,14 @@ class Client {
   }
 
   query(conversationId: string, question: string) {
-    return fetch(`${this.base}/chat/query`, {
+    return fetch(this.endpoint('/chat/query'), {
       method: 'POST',
       credentials: 'same-origin',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ conversation_id: conversationId, question }),
+    }).then((resp) => {
+      if (resp.status === 401) this.redirectOnUnauthorized('/chat/query')
+      return resp
     })
   }
 }

@@ -1,9 +1,10 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { useAuthStore } from '../stores/auth'
 import { canAccess } from './guard'
+import { applicationBasePath, embeddedUserManagementHidden } from '../platform'
 
 const router = createRouter({
-  history: createWebHistory(),
+  history: createWebHistory(applicationBasePath()),
   routes: [
     {
       path: '/login',
@@ -86,6 +87,10 @@ const router = createRouter({
 })
 
 router.beforeEach(async (to) => {
+  // 用户管理属于本地账号体系，生产嵌入由主系统管角色：嵌入模式屏蔽该路由
+  if (embeddedUserManagementHidden() && to.name === 'users') {
+    return { name: 'kb-list' }
+  }
   const auth = useAuthStore()
   if (!auth.initialized) {
     await auth.init()

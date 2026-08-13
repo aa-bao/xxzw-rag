@@ -1,4 +1,5 @@
 import { api } from './client'
+import { applicationUrl } from '../platform'
 
 /**
  * 文档状态（镜像后端 rag_document.status 完整枚举）。
@@ -161,5 +162,5 @@ export async function getDocRaw(kbId: number, docId: number): Promise<DocRaw> {
 
 /** 逐记录映射错误下载链接（浏览器直接下载；仅 mapping_ready 结构化文档存在） */
 export function mappingErrorsUrl(docId: number): string {
-  return `/api/docs/${docId}/mapping-errors/download`
+  return applicationUrl(`api/docs/${docId}/mapping-errors/download`)
 }

@@ -26,13 +26,13 @@
         ref="fileInput"
         type="file"
         multiple
-        accept=".txt,.md,.markdown,.docx,.json,.jsonl"
+        accept=".txt,.md,.markdown,.docx"
         class="upload-drop__input"
         @change="handleInputChange"
       />
       <el-icon class="upload-drop__icon" aria-hidden="true"><UploadFilled /></el-icon>
       <p class="upload-drop__title">{{ dragging ? '松开以添加文件' : '拖拽文件到此处，或点击选择' }}</p>
-      <p class="upload-drop__hint">支持 .txt / .md / .markdown / .docx / .json / .jsonl（JSON 进入映射向导）</p>
+      <p class="upload-drop__hint">支持 .txt / .md / .markdown / .docx</p>
     </div>
 
     <!-- 不支持扩展名的内联错误 -->
@@ -113,16 +113,13 @@ const props = defineProps<{
 const emit = defineEmits<{
   (e: 'update:visible', v: boolean): void
   (e: 'uploaded', doc: DocInfo): void
-  /** JSON/JSONL 文件：打开映射向导（不进入 legacy 三路上传队列） */
-  (e: 'open-json-wizard', file: File): void
 }>()
 
 const UPLOAD_CONCURRENCY = 3
 const DONE_HOLD_MS = 1200
 
-/** 支持的文本扩展名（legacy 三路队列）与 JSON 扩展名（映射向导） */
-const TEXT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.docx'])
-const JSON_EXTENSIONS = new Set(['.json', '.jsonl'])
+/** 普通文档入口支持的扩展名；JSON/JSONL 由结构化数据入口处理。 */
+const DOCUMENT_EXTENSIONS = new Set(['.txt', '.md', '.markdown', '.docx'])
 
 function extensionOf(name: string): string {
   const idx = name.lastIndexOf('.')
@@ -168,29 +165,26 @@ const breathMotion = {
   },
 }
 
-/* ── 文件入队：按扩展名路由（TXT/MD → legacy 队列；JSON/JSONL → 向导） ── */
+/* ── 普通文档入队 ── */
 function enqueue(files: FileList | File[]) {
   const list = Array.from(files).filter((f) => f.size > 0)
   if (!list.length) return
   inlineError.value = ''
 
-  const textFiles: File[] = []
+  const documentFiles: File[] = []
   for (const f of list) {
     const ext = extensionOf(f.name)
-    if (JSON_EXTENSIONS.has(ext)) {
-      // JSON/JSONL：打开映射向导，不进入 legacy 上传队列
-      emit('open-json-wizard', f)
-    } else if (TEXT_EXTENSIONS.has(ext)) {
-      textFiles.push(f)
+    if (DOCUMENT_EXTENSIONS.has(ext)) {
+      documentFiles.push(f)
     } else {
-      inlineError.value = `不支持的文件类型：${f.name}（支持 .txt/.md/.markdown/.docx/.json/.jsonl）`
+      inlineError.value = `不支持的普通文档类型：${f.name}（支持 .txt/.md/.markdown/.docx）`
     }
   }
 
-  if (!textFiles.length) return
+  if (!documentFiles.length) return
   items.value = [
     ...items.value,
-    ...textFiles.map((f) => ({ id: nextUploadId++, file: f, status: 'pending' as const, error: null })),
+    ...documentFiles.map((f) => ({ id: nextUploadId++, file: f, status: 'pending' as const, error: null })),
   ]
   void drainQueue()
 }

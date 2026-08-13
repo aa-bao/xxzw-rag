@@ -10,17 +10,17 @@
       <!-- 内容 -->
       <div class="login-hero__content">
         <div class="login-hero__brand" v-motion="heroMotion(0)">
-          <span class="login-hero__logo" aria-hidden="true">想象之外</span>
-          <span class="login-hero__brand-name">RAG 知识库</span>
+          <span class="login-hero__logo" aria-hidden="true">AI 工作台</span>
+          <span class="login-hero__brand-name">rag-database</span>
         </div>
 
         <div class="login-hero__headline" v-motion="heroMotion(1)">
           <h1 class="login-hero__title">
-            让每份文档<br />
-            都被看见、被检索、被回答
+            企业级 AI 工作平台<br />
+            知识、检索与问答，一站完成
           </h1>
           <p class="login-hero__subtitle">
-            企业级检索增强生成平台。上传文档，自动切分向量化，
+            以 RAG 知识库为核心模块，上传文档自动切分向量化，
             用自然语言对话，答案带引用可溯源。
           </p>
         </div>
@@ -41,7 +41,7 @@
         </div>
 
         <p class="login-hero__footer" v-motion="heroMotion(3)">
-          © 2026 想象之外 · 内部知识管理系统
+          © 2026 AI 工作台 · 企业智能工作平台
         </p>
       </div>
     </section>

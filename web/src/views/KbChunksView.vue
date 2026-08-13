@@ -60,6 +60,7 @@
           v-for="(chunk, i) in chunks"
           :key="chunk.chunk_id"
           class="chunk-card glass-surface"
+          :class="{ 'chunk-card--editing': editingChunkId === chunk.chunk_id }"
           v-motion="chunkMotion(i)"
           :hovered="hoverMotion"
         >
@@ -95,7 +96,7 @@
               v-model="draftContent"
               type="textarea"
               resize="vertical"
-              :autosize="{ minRows: 5, maxRows: 18 }"
+              :rows="5"
               :maxlength="MAX_CHUNK_CHARS"
               show-word-limit
               aria-label="切片内容"
@@ -443,6 +444,14 @@ const hoverMotion = {
   outline-offset: 2px;
 }
 
+/* 编辑中的卡片：高亮边框标识当前编辑切片 */
+.chunk-card--editing {
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 50%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--accent-blue) 10%, transparent),
+    var(--shadow-card);
+}
+
 .chunk-card__head {
   display: flex;
   align-items: center;
@@ -532,10 +541,12 @@ const hoverMotion = {
 }
 
 .chunk-card__editor :deep(.el-textarea__inner) {
-  padding: 12px 14px;
+  min-height: 280px;
+  padding: 14px 16px;
   font-family: inherit;
-  font-size: 13px;
-  line-height: 1.65;
+  font-size: 14px;
+  line-height: 1.75;
+  border-radius: var(--radius-lg);
 }
 
 .chunk-card__editor-note,

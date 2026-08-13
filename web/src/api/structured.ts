@@ -1,4 +1,5 @@
 import { api } from './client'
+import { applicationUrl } from '../platform'
 import type {
   Compatibility,
   CreateMappingTemplateVersionInput,
@@ -72,7 +73,7 @@ export async function fetchMappingErrors(docId: number): Promise<MappingErrorsRe
 
 /** 逐记录错误下载链接（浏览器直接下载） */
 export function mappingErrorsUrl(docId: number): string {
-  return `/api/docs/${docId}/mapping-errors/download`
+  return applicationUrl(`api/docs/${docId}/mapping-errors/download`)
 }
 
 /** 在映射变化时对模板做兼容性检查（后端兼容性判定） */

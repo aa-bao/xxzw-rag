@@ -3,25 +3,44 @@
     <div class="app-layout__glow app-layout__glow--1" aria-hidden="true"></div>
     <div class="app-layout__glow app-layout__glow--2" aria-hidden="true"></div>
 
-    <aside class="app-sidebar glass-surface">
+    <aside v-if="!embedded" class="app-sidebar glass-surface">
       <div class="app-sidebar__brand">
-        <span class="app-sidebar__logo" aria-hidden="true">想象之外</span>
-        <span class="app-sidebar__brand-name">RAG 知识库</span>
+        <span class="app-sidebar__logo" aria-hidden="true">AI 工作台</span>
+        <span class="app-sidebar__brand-name">rag-database</span>
       </div>
 
       <nav class="app-sidebar__nav" aria-label="主导航">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.name"
-          :to="{ name: item.name }"
-          class="app-sidebar__nav-item btn-press"
-          :class="{ 'app-sidebar__nav-item--active': isActive(item.name) }"
-          v-motion="navMotion"
-        >
-          <span class="app-sidebar__nav-bar" aria-hidden="true"></span>
-          <el-icon class="app-sidebar__nav-icon" aria-hidden="true"><component :is="item.icon" /></el-icon>
-          <span>{{ item.label }}</span>
-        </RouterLink>
+        <div class="app-sidebar__group">
+          <button
+            class="app-sidebar__group-toggle btn-press"
+            :aria-expanded="groupOpen"
+            aria-label="RAG 知识库"
+            @click="groupOpen = !groupOpen"
+          >
+            <span class="app-sidebar__nav-bar" aria-hidden="true"></span>
+            <el-icon class="app-sidebar__nav-icon" aria-hidden="true"><Collection /></el-icon>
+            <span class="app-sidebar__group-name">RAG 知识库</span>
+            <el-icon
+              class="app-sidebar__group-caret"
+              :class="{ 'is-open': groupOpen }"
+              aria-hidden="true"
+            ><ArrowDown /></el-icon>
+          </button>
+
+          <div v-show="groupOpen" class="app-sidebar__group-items">
+            <RouterLink
+              v-for="item in navItems"
+              :key="item.name"
+              :to="{ name: item.name }"
+              class="app-sidebar__nav-item btn-press"
+              :class="{ 'app-sidebar__nav-item--active': isActive(item.name) }"
+              v-motion="navMotion"
+            >
+              <el-icon class="app-sidebar__nav-icon" aria-hidden="true"><component :is="item.icon" /></el-icon>
+              <span>{{ item.label }}</span>
+            </RouterLink>
+          </div>
+        </div>
       </nav>
 
       <div class="app-sidebar__user" v-if="auth.user">
@@ -50,14 +69,28 @@
 </template>
 
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
-import { ChatDotRound, Files, Setting, SwitchButton, User } from '@element-plus/icons-vue'
+import {
+  ArrowDown,
+  ChatDotRound,
+  Collection,
+  Files,
+  Setting,
+  SwitchButton,
+  User,
+} from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
+import { embeddedUserManagementHidden, isEmbedded } from '../platform'
 
 const auth = useAuthStore()
 const route = useRoute()
 const router = useRouter()
+const embedded = isEmbedded()
+/** 用户管理属于本地账号体系，生产嵌入由主系统管角色：嵌入模式隐藏入口 */
+const userManagementHidden = embeddedUserManagementHidden()
+/** RAG 知识库一级目录默认展开 */
+const groupOpen = ref(true)
 
 const navItems = computed(() => {
   const items: Array<{ name: string; label: string; icon: unknown }> = [
@@ -66,7 +99,9 @@ const navItems = computed(() => {
   ]
   if (auth.isAdmin) {
     items.push({ name: 'settings', label: '设置', icon: Setting })
-    items.push({ name: 'users', label: '用户管理', icon: User })
+    if (!userManagementHidden) {
+      items.push({ name: 'users', label: '用户管理', icon: User })
+    }
   }
   return items
 })
@@ -158,6 +193,55 @@ async function handleLogout() {
   flex-direction: column;
   gap: 4px;
   flex: 1;
+}
+
+.app-sidebar__group {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.app-sidebar__group-toggle {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 10px 12px;
+  border: none;
+  border-radius: var(--radius-lg);
+  background: transparent;
+  color: var(--text-primary);
+  font-family: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  cursor: pointer;
+  text-align: left;
+}
+
+.app-sidebar__group-toggle:hover {
+  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+}
+
+.app-sidebar__group-name {
+  flex: 1;
+}
+
+.app-sidebar__group-caret {
+  font-size: 14px;
+  color: var(--text-tertiary);
+  transition: none;
+}
+
+.app-sidebar__group-caret.is-open {
+  transform: rotate(180deg);
+}
+
+.app-sidebar__group-items {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-top: 2px;
+  padding-left: 22px;
 }
 
 .app-sidebar__nav-item {

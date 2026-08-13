@@ -11,7 +11,11 @@
     <template v-else>
       <!-- 记录选择器 -->
       <div class="json-preview__meta">
-        <span class="kpi-num">共 {{ totalRows }} 条记录</span>
+        <span class="json-preview__count">
+          预览 <strong class="kpi-num">{{ rows.length }}</strong>
+          <span class="json-preview__count-separator">/</span>
+          共 <strong class="kpi-num">{{ totalRows }}</strong> 条
+        </span>
         <el-select
           class="json-preview__picker"
           :model-value="selectedIndex"
@@ -22,7 +26,7 @@
             v-for="(row, i) in rows"
             :key="row.record_id"
             :value="i"
-            :label="`${i + 1} / ${rows.length} · ${row.record_type} · ${row.source_pointer}`"
+            :label="optionLabel(row, i)"
           />
         </el-select>
       </div>
@@ -121,6 +125,46 @@ const EMPTY_ROW: PreviewRow = {
 
 const prettyRaw = computed(() => JSON.stringify(currentRow.value.raw, null, 2))
 
+const RECORD_TYPE_LABELS: Record<string, string> = {
+  record: '主记录',
+  post: '帖子',
+  comment: '评论',
+}
+
+function recordTypeLabel(recordType: string): string {
+  return RECORD_TYPE_LABELS[recordType] ?? recordType
+}
+
+/** 仅转换展示格式；不修改后端 source_pointer，避免影响稳定记录 ID。 */
+function readablePath(pointer: string): string {
+  if (!pointer || pointer === '$') return '$'
+  const normalized = pointer.startsWith('$/') ? pointer.slice(1) : pointer
+  const parts = normalized.split('/').filter(Boolean)
+  let path = '$'
+  for (const part of parts) {
+    const decoded = part.replace(/~1/g, '/').replace(/~0/g, '~')
+    path += /^\d+$/.test(decoded) ? `[${decoded}]` : `.${decoded}`
+  }
+  return path
+}
+
+function rowSummary(row: PreviewRow): string {
+  const raw = row.raw as Record<string, unknown>
+  const author = typeof raw.author === 'string' ? raw.author.trim() : ''
+  const sourceText =
+    row.title ||
+    row.content ||
+    (typeof raw.body === 'string' ? raw.body : '') ||
+    (typeof raw.text === 'string' ? raw.text : '')
+  const text = sourceText.replace(/\s+/g, ' ').trim()
+  const summary = author && text ? `${author}：${text}` : text || author || '无可读内容'
+  return summary.length > 34 ? `${summary.slice(0, 34)}…` : summary
+}
+
+function optionLabel(row: PreviewRow, index: number): string {
+  return `${index + 1}  ${recordTypeLabel(row.record_type)}  ${rowSummary(row)}  ·  ${readablePath(row.source_pointer)}`
+}
+
 function pretty(value: Record<string, unknown>): string {
   const entries = Object.entries(value)
   if (entries.length === 0) return '（无）'
@@ -139,7 +183,17 @@ function pretty(value: Record<string, unknown>): string {
 }
 
 .json-preview__picker {
-  width: 320px;
+  width: min(520px, calc(100% - 140px));
+}
+
+.json-preview__count {
+  white-space: nowrap;
+  color: var(--text-secondary);
+}
+
+.json-preview__count-separator {
+  margin: 0 3px;
+  color: var(--text-tertiary);
 }
 
 .json-preview__pre {
