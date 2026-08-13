@@ -1,0 +1,2 @@
+# Non-credential conformance sentinel in a historical test fixture.
+b63b5e9d420beddfabf64dd6a4767f7dd8fa3eba:rag-service/tests/platform/conftest.py:generic-api-key:31
