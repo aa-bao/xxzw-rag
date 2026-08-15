@@ -86,6 +86,70 @@ def test_low_uniqueness_short_text_becomes_keyword(tmp_path: Path) -> None:
     assert suggestion.field("code").role == "keyword"
 
 
+def test_nested_qa_suggestion_keeps_urls_out_of_content_and_names_out_of_title(
+    tmp_path: Path,
+) -> None:
+    """问答抓取数据中的长资源 URL 和嵌套人物名不能污染可检索正文。"""
+    # 批量导入只根据首个文件生成共享模板；即使首条问题很短，question.text
+    # 也必须按字段语义识别为正文，不能让后续长问题全部落入 display。
+    question = "家居用品竞争大吗？"
+    answer = "门槛较低的类目通常竞争更激烈，应结合支付金额和市场占比判断。" * 6
+    profile = profile_source(
+        _json_file(
+            tmp_path,
+            "topic.json",
+            [
+                {
+                    "topic_id": "188111288515812",
+                    "group": {
+                        "name": "速卖通AliExpress",
+                        "background_url": "https://images.example.com/" + "a" * 160,
+                    },
+                    "question": {
+                        "owner": {
+                            "name": "Sophia C.",
+                            "avatar_url": "https://images.example.com/" + "b" * 160,
+                        },
+                        "text": question,
+                    },
+                    "answer": {
+                        "owner": {
+                            "name": "认证讲师",
+                            "avatar_url": "https://images.example.com/" + "c" * 160,
+                        },
+                        "text": answer,
+                    },
+                    "columns": [{"column_id": "158114415842", "name": "新入必看帖子"}],
+                }
+            ],
+        ),
+        "json",
+    )
+
+    suggestion = suggest_mapping(profile)
+
+    assert suggestion.field("question.text").role == "content"
+    assert suggestion.field("answer.text").role == "content"
+    assert suggestion.field("group.background_url").role == "display"
+    assert suggestion.field("question.owner.avatar_url").role == "display"
+    assert suggestion.field("answer.owner.avatar_url").role == "display"
+    assert suggestion.field("group.name").role != "title"
+    assert suggestion.field("question.owner.name").role != "title"
+    assert suggestion.field("answer.owner.name").role != "title"
+    content_paths = [
+        field.path
+        for field in suggestion.record_types[0].fields
+        if field.role == "content"
+    ]
+    assert content_paths == ["question.text", "answer.text"]
+    columns = next(
+        child
+        for child in suggestion.record_types[0].children
+        if child.record_path == "columns[*]"
+    )
+    assert all(field.role != "title" for field in columns.fields)
+
+
 def test_requires_user_confirmation_always_true(post_profile: SourceProfile) -> None:
     suggestion = suggest_mapping(post_profile)
 

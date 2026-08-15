@@ -21,3 +21,6 @@ test/
 
 # CI 门禁报告产物（scripts/generate-gate-report.py 默认输出）
 /gate-report.json
+# Retrieval benchmark vector caches (large, reproducible from source data)
+rag-service/artifacts/*.embeddings.json
+rag-service/artifacts/*.embeddings.json.*.part.json

@@ -221,6 +221,7 @@ function flattenRecordTypes(rts: RecordTypeMapping[]): RecordTypeMapping[] {
 const POLICY_LABELS: Record<RecordTypeMapping['chunk_policy'], string> = {
   semantic: '语义切块',
   atomic: '原子切块',
+  topic: '多入口完整主题',
   'parent-only': '并入父记录',
   ignore: '忽略',
 }

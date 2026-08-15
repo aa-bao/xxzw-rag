@@ -495,15 +495,23 @@ async function handleConfirmIngest() {
     busy.value = 'create_version'
     const created = await createMappingTemplateVersion({ template_id, name, mapping: s.mapping })
     busy.value = null
+    // confirmIngest 在整批成功后会清空 batchDocs；提交前保留展示元数据，
+    // 确保完成事件仍携带原始文件名和大小。
+    const batchMetadata = new Map(
+      (batchDocs.value ?? []).map((entry) => [
+        entry.docId,
+        { name: entry.name, fileSizeBytes: entry.fileSizeBytes },
+      ]),
+    )
     const results = await hook.confirmIngest(created.mapping_version_id)
     // 逐条通知文档列表（追加文档行并轮询状态）；带真实文件名与大小供列表展示
     for (const r of results) {
-      const entry = batchDocs.value?.find((e) => e.docId === r.doc_id)
+      const metadata = batchMetadata.get(r.doc_id)
       emit('ingested', {
         docId: r.doc_id,
         jobId: r.job_id,
-        name: entry?.name,
-        fileSizeBytes: entry?.fileSizeBytes ?? null,
+        name: metadata?.name,
+        fileSizeBytes: metadata?.fileSizeBytes ?? null,
       })
     }
     const failedCount = batchFailedCount.value

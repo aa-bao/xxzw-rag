@@ -52,6 +52,10 @@ vi.mock('./useJsonMappingWizard', async () => {
         entry.error = err instanceof Error ? err.message : String(err)
       }
     }
+    // 真实状态机在整批成功后会清空 transient 批次数据。
+    if (batchDocs.value?.every((entry) => entry.status === 'ingested')) {
+      batchDocs.value = null
+    }
     return succeeded
   })
   const singleton = {
@@ -81,8 +85,8 @@ const wizardMock = async () => (await import('./useJsonMappingWizard')).useJsonM
 const { startJsonIngest } = await import('../../api/structured')
 const startJsonIngestMock = vi.mocked(startJsonIngest)
 
-function batchEntry(docId: number, name: string, status: BatchDocEntry['status'], jobId: number | null = null, error: string | null = null): BatchDocEntry {
-  return { docId, name, fileSizeBytes: null, status, jobId, error }
+function batchEntry(docId: number, name: string, status: BatchDocEntry['status'], jobId: number | null = null, error: string | null = null, fileSizeBytes = 3190): BatchDocEntry {
+  return { docId, name, fileSizeBytes, status, jobId, error }
 }
 
 /** 已挂载的 wrapper：测试间卸载并清理 body，避免残留对话框干扰后续用例 */
@@ -164,8 +168,8 @@ describe('JsonMappingWizard confirm action', () => {
 
     const ingested = wrapper.emitted('ingested')
     expect(ingested).toHaveLength(2)
-    expect(ingested?.[0]?.[0]).toEqual({ docId: 11, jobId: 110, name: 'a.json', fileSizeBytes: null })
-    expect(ingested?.[1]?.[0]).toEqual({ docId: 12, jobId: 120, name: 'b.json', fileSizeBytes: null })
+    expect(ingested?.[0]?.[0]).toEqual({ docId: 11, jobId: 110, name: 'a.json', fileSizeBytes: 3190 })
+    expect(ingested?.[1]?.[0]).toEqual({ docId: 12, jobId: 120, name: 'b.json', fileSizeBytes: 3190 })
   })
 
   it('emits close when the whole batch succeeds', async () => {

@@ -87,6 +87,25 @@ def test_chroma_result_maps_empty_query() -> None:
     assert ChromaRetrieval._to_chunks({"ids": [[]], "documents": [[]], "metadatas": [[]]}) == []
 
 
+def test_chroma_result_preserves_structured_record_metadata() -> None:
+    chunks = ChromaRetrieval._to_chunks({
+        "ids": [["entry-1"]],
+        "documents": [["complete topic"]],
+        "metadatas": [[{
+            "doc_id": 3,
+            "title": "topic.json",
+            "record_id": "topic-585",
+            "record_type": "zsxq_qa",
+            "source_pointer": "$",
+        }]],
+        "distances": [[0.1]],
+    })
+
+    assert chunks[0].record_id == "topic-585"
+    assert chunks[0].record_type == "zsxq_qa"
+    assert chunks[0].source_pointer == "$"
+
+
 def test_get_collection_creates_with_cosine_space(monkeypatch: pytest.MonkeyPatch) -> None:
     """New collections are pinned to cosine distance so score=1-distance is a similarity."""
     retrieval = ChromaRetrieval(session_factory=object())
@@ -260,7 +279,7 @@ async def test_retrieve_overfetches_and_reranks_exact_question(
             top_k=5,
         )
 
-        assert collection.query_calls[0]["n_results"] == 20
+        assert collection.query_calls[0]["n_results"] == 100
         candidate = next(chunk for chunk in chunks if chunk.chunk_id == "exact")
         assert candidate.score == pytest.approx(0.23)
         assert candidate.rank_score == pytest.approx(0.4225)

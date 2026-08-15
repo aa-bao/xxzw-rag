@@ -36,7 +36,7 @@ export interface TransformSpec {
 }
 
 /** 切块策略 */
-export type ChunkPolicy = 'semantic' | 'atomic' | 'parent-only' | 'ignore'
+export type ChunkPolicy = 'semantic' | 'atomic' | 'topic' | 'parent-only' | 'ignore'
 
 /** 通用关系规则：源字段匹配最近前序同级记录的目标字段（仅下拉选择，禁止表达式） */
 export interface RelationRule {

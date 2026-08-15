@@ -6,7 +6,8 @@ export default defineConfig({
   base: './',
   plugins: [vue(), tailwindcss()],
   server: {
-    port: 5174,
+    port: 5173,
+    strictPort: true,
     allowedHosts: [
       'esophagus-truffle-askew.ngrok-free.dev',
       '.cpolar.top',

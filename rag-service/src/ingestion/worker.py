@@ -10,6 +10,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
@@ -40,6 +41,7 @@ _EMBED_BATCH_SIZE = 64
 _ERROR_TRUNCATE = 500
 # job 最大重试次数
 _MAX_ATTEMPTS = 3
+_MAX_EMBED_CHARS = 500
 
 
 class IngestWorker:
@@ -217,27 +219,30 @@ class IngestWorker:
                 # 超长 chunk（如大表格行）先按字符硬切为 ≤500 字的子片段，保内容不丢。
                 if not await self._set_stage(job.id, doc.id, "embedding"):
                     return
-                MAX_EMBED_CHARS = 500
                 embed_items: list[dict[str, Any]] = []
                 for c in chunks:
                     content = c["content"]
-                    if len(content) <= MAX_EMBED_CHARS:
+                    embedding_text = c.get("embedding_text") or content
+                    preserve_full_content = bool(c.get("preserve_full_content"))
+                    if len(embedding_text) <= _MAX_EMBED_CHARS or preserve_full_content:
                         embed_items.append(
                             {
                                 "chunk_id": c["chunk_id"],
                                 "content": content,
+                                "embedding_text": embedding_text[:_MAX_EMBED_CHARS],
                                 "chunk_index": c["index"],
                                 **self._structured_metadata(c),
                             }
                         )
                         continue
-                    for idx in range(0, len(content), MAX_EMBED_CHARS):
-                        piece = content[idx : idx + MAX_EMBED_CHARS]
+                    for idx in range(0, len(content), _MAX_EMBED_CHARS):
+                        piece = content[idx : idx + _MAX_EMBED_CHARS]
                         if piece.strip():
                             embed_items.append(
                                 {
                                     "chunk_id": f"{c['chunk_id']}#{idx}",
                                     "content": piece,
+                                    "embedding_text": piece,
                                     "chunk_index": c["index"],
                                     **self._structured_metadata(c),
                                 }
@@ -246,7 +251,7 @@ class IngestWorker:
                 embeddings: list[list[float]] = []
                 for i in range(0, len(embed_items), self._embed_batch_size):
                     batch = embed_items[i : i + self._embed_batch_size]
-                    vectors = await self._relay.embed([it["content"] for it in batch])
+                    vectors = await self._relay.embed([it["embedding_text"] for it in batch])
                     embeddings.extend(vectors)
 
                 # ④ indexing：写入向量库（用拆分后的子片段，每个独立向量）
@@ -358,19 +363,27 @@ class IngestWorker:
                     ).strip()
                     if not text:
                         continue
-                    pieces = (
-                        split_text(
+                    if policy == "semantic":
+                        pieces = split_text(
                             doc.id,
                             text,
                             chunk_size=chunk_size,
                             overlap=overlap,
                         )
-                        if policy == "semantic"
-                        else [{"content": text}]
-                    )
+                    elif policy == "topic":
+                        pieces = self._topic_retrieval_entries(text)
+                    else:
+                        pieces = [{
+                            "content": text,
+                            "embedding_text": text[:_MAX_EMBED_CHARS],
+                            "preserve_full_content": True,
+                        }]
                     for ordinal, piece in enumerate(pieces):
                         content = str(piece["content"])
-                        content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+                        embedding_text = str(piece.get("embedding_text") or content)
+                        content_hash = hashlib.sha256(
+                            f"{content}\0{embedding_text}".encode("utf-8")
+                        ).hexdigest()
                         chunks.append(
                             {
                                 "chunk_id": (
@@ -378,6 +391,10 @@ class IngestWorker:
                                     f"{content_hash[:12]}"
                                 ),
                                 "content": content,
+                                "embedding_text": embedding_text,
+                                "preserve_full_content": bool(
+                                    piece.get("preserve_full_content")
+                                ),
                                 "index": len(chunks),
                                 "record_id": record.record_id,
                                 "parent_id": record.parent_id,
@@ -387,6 +404,35 @@ class IngestWorker:
                             }
                         )
         return chunks
+
+    @staticmethod
+    def _topic_retrieval_entries(text: str) -> list[dict[str, Any]]:
+        """Create small retrieval entries that all return the complete topic.
+
+        Paragraphs are retrieval representations only.  The stored document stays
+        the complete mapped record, so a hit never loses its question/answer context.
+        """
+        paragraphs = [
+            part.strip(" ，。！？；:：")
+            for part in re.split(r"[\n。！？；]+", text)
+            if part.strip(" ，。！？；:：")
+        ]
+        if not paragraphs:
+            return []
+        entries: list[str] = []
+        for paragraph in paragraphs:
+            for start in range(0, len(paragraph), _MAX_EMBED_CHARS):
+                entry = paragraph[start : start + _MAX_EMBED_CHARS].strip()
+                if entry and entry not in entries:
+                    entries.append(entry)
+        return [
+            {
+                "content": text,
+                "embedding_text": entry,
+                "preserve_full_content": True,
+            }
+            for entry in entries
+        ]
 
     @staticmethod
     def _structured_metadata(chunk: dict[str, Any]) -> dict[str, Any]:

@@ -22,7 +22,7 @@ ConditionKind = Literal[
     "skip_if_only_emoji",
     "skip_if_matches",
 ]
-ChunkPolicy = Literal["semantic", "atomic", "parent-only", "ignore"]
+ChunkPolicy = Literal["semantic", "atomic", "topic", "parent-only", "ignore"]
 
 ROLES: tuple[Role, ...] = (
     "id", "title", "content", "keyword", "filter", "timestamp", "display", "ignore",

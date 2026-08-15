@@ -18,6 +18,9 @@ class RetrievedChunk:
     rank_score: float | None = None
     chunk_index: int | None = None
     is_neighbor: bool = False
+    record_id: str | None = None
+    record_type: str | None = None
+    source_pointer: str | None = None
 
     @property
     def ordering_score(self) -> float:

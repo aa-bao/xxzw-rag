@@ -19,7 +19,10 @@
         @keydown.enter="selectCandidate(candidate.record_path)"
       >
         <div class="structure-card__head">
-          <span class="structure-card__path" :title="candidate.record_path">{{ candidate.record_path }}</span>
+          <span class="structure-card__path" :title="recordPathLabel(candidate.record_path)">
+            <span v-if="candidate.record_path === '$'" class="structure-card__path-name">根对象</span>
+            <code>{{ candidate.record_path }}</code>
+          </span>
           <span class="structure-card__conf" :class="confClass(candidate.confidence)">
             {{ Math.round(candidate.confidence * 100) }}% 置信
           </span>
@@ -64,6 +67,11 @@ const selectedPath = ref<string | null>(null)
 function selectCandidate(candidatePath: string) {
   if (props.busy !== null) return
   selectedPath.value = candidatePath
+}
+
+/** `$` 是标准 JSONPath 根节点；补充人类可读名称，避免被误认为渲染残缺。 */
+function recordPathLabel(candidatePath: string): string {
+  return candidatePath === '$' ? '$（根对象）' : candidatePath
 }
 
 function confClass(confidence: number): string {
@@ -123,6 +131,17 @@ defineExpose({ selectedPath, confirmSelection: () => selectedPath.value })
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.structure-card__path-name {
+  margin-right: 8px;
+  font-family: var(--font-sans);
+  color: var(--text-primary);
+}
+
+.structure-card__path code {
+  font: inherit;
+  color: inherit;
 }
 
 .structure-card__conf {

@@ -257,7 +257,10 @@ class ChromaRetrieval(RetrievalModule):
             logger.warning("Chroma collection %r unavailable: %s", collection_name, exc)
             return []
         try:
-            candidate_k = max(top_k * 4, 20)
+            # Structured Topic indexes can have several retrieval entries for one
+            # record. Overfetch enough candidates before record-level deduplication
+            # so one verbose Topic cannot occupy the whole candidate window.
+            candidate_k = max(top_k * 20, 100)
             if self._relay is not None:
                 query_embeddings = await self._relay.embed([query])
                 result = collection.query(
@@ -285,7 +288,17 @@ class ChromaRetrieval(RetrievalModule):
             for chunk in chunks
         ]
         chunks.sort(key=lambda chunk: chunk.ordering_score, reverse=True)
-        return chunks[:top_k]
+        deduplicated: list[RetrievedChunk] = []
+        seen_records: set[tuple[int, str]] = set()
+        for chunk in chunks:
+            key = (chunk.doc_id, chunk.record_id or chunk.chunk_id)
+            if key in seen_records:
+                continue
+            seen_records.add(key)
+            deduplicated.append(chunk)
+            if len(deduplicated) >= top_k:
+                break
+        return deduplicated
 
     async def expand_context(
         self,
@@ -425,6 +438,9 @@ class ChromaRetrieval(RetrievalModule):
                     # score=1-distance 即余弦相似度（负值=无关）
                     score=1.0 - float(distance) if distance is not None else 0.0,
                     chunk_index=_resolve_chunk_index(meta, str(ids[i])),
+                    record_id=str(meta.get("record_id") or "") or None,
+                    record_type=str(meta.get("record_type") or "") or None,
+                    source_pointer=str(meta.get("source_pointer") or "") or None,
                 )
             )
         return chunks

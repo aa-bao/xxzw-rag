@@ -33,7 +33,15 @@ _ROLES = (
     "id", "title", "content", "keyword", "filter", "timestamp", "display", "ignore",
 )
 _ID_NAME_PATTERN = re.compile(r"(^|[-_.])(id|uuid|guid|key|编号|标识)([-_.]|$)", re.IGNORECASE)
-_TITLE_WORDS = ("title", "name", "subject", "主题", "标题")
+_EXPLICIT_TITLE_WORDS = ("title", "subject", "主题", "标题")
+_RESOURCE_NAME_PATTERN = re.compile(
+    r"(^|[-_.])(url|uri|href|link|avatar|image|img|photo|icon|logo|background|thumbnail)([-_.]|$)",
+    re.IGNORECASE,
+)
+_CONTENT_PATH_PATTERN = re.compile(
+    r"(^|\.)(question|answer|article|post|message)\.(text|body|content)$",
+    re.IGNORECASE,
+)
 _LONG_TEXT_MIN = 64
 _PROMPT_SCHEMA = (
     "你的输出必须是合法 JSON 对象：{\"name\": str, \"source_format\": "
@@ -53,7 +61,7 @@ def _default_name(path: str) -> str:
     return last.split("[", 1)[0]
 
 
-def _role_for(stats: PathStats, name: str) -> tuple[str, str]:
+def _role_for(stats: PathStats, name: str, path: str = "") -> tuple[str, str]:
     """按顺序规则判定角色，返回 (role, rule_id)。"""
     lowered = name.lower()
 
@@ -63,39 +71,60 @@ def _role_for(stats: PathStats, name: str) -> tuple[str, str]:
     ):
         return "id", "unique_identifier"
 
-    # 2. 可解析时间
+    # 2. 资源定位字段只作为展示元数据；URL 很长并不代表它是正文。
+    if _RESOURCE_NAME_PATTERN.search(name):
+        return "display", "resource_reference"
+
+    # 3. 可解析时间
     if stats.datetime_attempted > 0 and stats.datetime_parse_rate >= 0.8:
         return "timestamp", "datetime_parse_rate"
 
-    # 3. 标题：名称像标题的短标量 → title
-    if stats.container == "scalar" and stats.avg_length <= 256 and any(
-        w in lowered for w in _TITLE_WORDS
-    ):
+    # 4. 标题：嵌套 name 通常是人物/分组名称，不能覆盖记录标题；
+    # title/subject 等明确语义可位于嵌套对象，根级 name 仍兼容为标题。
+    title_like = any(w in lowered for w in _EXPLICIT_TITLE_WORDS) or (
+        lowered == "name" and "." not in path
+    )
+    if stats.container == "scalar" and stats.avg_length <= 256 and title_like:
         return "title", "short_title"
 
-    # 4. 长文本 → content
+    # 5. 明确的正文路径不依赖当前样本长度。批量文件共享首个文件生成的模板，
+    # 若首条 question.text 很短，也不能把后续文件的问题正文永久归为 keyword/display。
+    if stats.container == "scalar" and _CONTENT_PATH_PATTERN.search(path):
+        return "content", "semantic_content_path"
+
+    # 6. 长文本 → content
     if stats.element_count > 0 and stats.avg_length >= _LONG_TEXT_MIN:
         return "content", "long_text"
 
-    # 5. 短且重复的标量/列表 → keyword
+    # 7. 短且重复的标量/列表 → keyword
     if stats.avg_length <= 32:
         return "keyword", "short_repeated"
 
-    # 6. 其他 → display
+    # 8. 其他 → display
     return "display", "display"
 
 
 def _suggest_fields(paths: dict[str, PathStats]) -> tuple[SuggestedField, ...]:
     """根记录字段建议（跳过子记录路径及其归属的数组路径）。"""
     suggested: list[SuggestedField] = []
-    for path in sorted(paths):
+    # 映射字段顺序也是最终正文拼接顺序；问答场景固定问题在回答之前，
+    # 其余字段保持字典序，确保建议仍是确定性的。
+    def field_order(path: str) -> tuple[int, str]:
+        lowered = path.lower()
+        if lowered == "question.text":
+            return (0, lowered)
+        if lowered == "answer.text":
+            return (1, lowered)
+        return (2, lowered)
+
+    for path in sorted(paths, key=field_order):
         stats = paths[path]
         if stats is None or stats.observed_count == 0:
             continue
         if stats.child_of is not None or stats.child_array_count > 0:
             continue  # 子记录字段 / 子记录数组由 children 处理
         name = _default_name(path)
-        role, rule_id = _role_for(stats, name)
+        role, rule_id = _role_for(stats, name, path)
         suggested.append(
             SuggestedField(path=path, role=role, name=name, confidence=1.0, rule_ids=(rule_id,))
         )
@@ -115,7 +144,9 @@ def _child_record_type(paths: dict[str, PathStats], array_name: str) -> RecordTy
             continue
         relative = path[len(prefix):] if path.startswith(prefix) else path
         name = _default_name(relative)
-        role, _ = _role_for(stats, name)
+        # 保留父数组上下文；否则 columns[*].name 会退化成根级 name，
+        # 被误判为标题并生成只有“栏目名”的垃圾块。
+        role, _ = _role_for(stats, name, f"{array_name}.{relative}")
         fields.append(FieldMapping(path=relative, role=role, name=name))
     return RecordTypeMapping(
         name="comment", record_path=f"{array_name}[*]", fields=tuple(fields)

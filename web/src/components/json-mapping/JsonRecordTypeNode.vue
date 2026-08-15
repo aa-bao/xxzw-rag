@@ -88,6 +88,7 @@ const emit = defineEmits<{
 const POLICY_OPTIONS: { value: ChunkPolicy; label: string }[] = [
   { value: 'semantic', label: '语义切块' },
   { value: 'atomic', label: '按记录原子切块' },
+  { value: 'topic', label: '多入口检索（返回完整主题）' },
   { value: 'parent-only', label: '并入父记录' },
   { value: 'ignore', label: '忽略' },
 ]
