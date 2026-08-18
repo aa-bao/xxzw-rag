@@ -18,12 +18,17 @@ def _col(table, name: str):
     return getattr(table, name)
 
 
+# 存量/独立数据统一回填的哨兵租户（flyway V6 / main 分支约定；本地模式需兼容）
+_SENTINEL_TENANT_ID = "000000"
+
+
 def tenant_condition(table, principal: ProjectPrincipal) -> ColumnElement[bool]:
-    """租户隔离：平台模式按 tenant_id 精确匹配；LOCAL（tenant 为空）匹配 NULL/空串旧数据。"""
+    """租户隔离：平台模式按 tenant_id 精确匹配；LOCAL（tenant 为空）匹配
+    NULL/空串旧数据以及哨兵租户 000000。"""
     tenant_column = _col(table, "tenant_id")
     if principal.tenant_id:
         return tenant_column == principal.tenant_id
-    return or_(tenant_column.is_(None), tenant_column == "")
+    return or_(tenant_column.is_(None), tenant_column == "", tenant_column == _SENTINEL_TENANT_ID)
 
 
 def scope_condition(table, principal: ProjectPrincipal) -> ScopeCondition:
