@@ -61,6 +61,75 @@ export async function deleteTask(taskId: string): Promise<void> {
   await client.delete('/video/tasks/' + taskId)
 }
 
+// ── 视频数据库（历史任务） ──
+
+export interface LibraryTask {
+  task_id: string
+  output_dir: string
+  title: string
+  summary: string
+  keypoints: string[]
+  transcript: string
+  keyframes: Array<{ path: string; timestamp_seconds: number }>
+  has_report: boolean
+  created_at: string | null
+  source: string
+  duration_seconds: number | null
+  cost: Record<string, unknown> | null
+  transcript_source?: string
+  visual_notes?: string[]
+}
+
+/** 视频数据库：历史任务列表 */
+export async function listLibrary(): Promise<LibraryTask[]> {
+  const resp = await client.get<LibraryTask[]>('/video/library')
+  return resp.data
+}
+
+/** 历史任务关键帧图片 URL */
+export function libraryFrameUrl(taskDir: string, name: string): string {
+  return applicationUrl('/api/video/library/' + encodeURIComponent(taskDir) + '/frames/' + name)
+}
+
+/** 历史任务 HTML 报告 URL */
+export function libraryReportUrl(taskDir: string): string {
+  return applicationUrl('/api/video/library/' + encodeURIComponent(taskDir) + '/report.html')
+}
+
+// ── 系统设置 ──
+
+export interface VideoEnvInfo {
+  script?: string
+  python?: string
+  library_root?: string
+  output_root?: string
+  task_root?: string
+  upload_dir?: string
+  dashscope_ready?: boolean
+}
+
+export interface VideoPrefs {
+  frames: number
+  qa_model: string
+}
+
+/** 视频解析运行环境信息 */
+export async function getVideoEnv(): Promise<VideoEnvInfo> {
+  const resp = await client.get<VideoEnvInfo>('/video/env')
+  return resp.data
+}
+
+/** 读取解析偏好 */
+export async function getVideoPrefs(): Promise<VideoPrefs> {
+  const resp = await client.get<VideoPrefs>('/video/prefs')
+  return resp.data
+}
+
+/** 保存解析偏好 */
+export async function saveVideoPrefs(prefs: VideoPrefs): Promise<void> {
+  await client.put('/video/prefs', prefs)
+}
+
 /** 关键帧图片 URL */
 export function frameUrl(taskId: string, name: string): string {
   return applicationUrl('/api/video/tasks/' + taskId + '/frames/' + name)

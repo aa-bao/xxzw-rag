@@ -118,6 +118,58 @@ async def upload_video(
     return {"success": True, "data": {"path": str(dest), "size": size, "filename": filename}}
 
 
+@router.get("/env")
+async def get_env(
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> dict[str, object]:
+    """视频解析运行环境信息（系统设置页展示）。"""
+    manager = _manager(request)
+    cfg = manager._config
+    return {
+        "success": True,
+        "data": {
+            "script": str(cfg.quick_watch_script),
+            "python": cfg.python,
+            "library_root": str(cfg.library_root),
+            "output_root": str(cfg.output_root),
+            "task_root": str(cfg.task_root),
+            "upload_dir": str(cfg.upload_dir),
+            "dashscope_ready": bool(cfg.dashscope_api_key),
+        },
+    }
+
+
+@router.get("/prefs")
+async def get_prefs(
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> dict[str, object]:
+    """读取解析偏好（localStorage 由前端管理，这里返回默认值占位）。"""
+    return {"success": True, "data": {"frames": 12, "qa_model": ""}}
+
+
+@router.put("/prefs")
+async def put_prefs(
+    body: dict[str, object],
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> dict[str, object]:
+    """保存解析偏好（当前为占位实现，实际偏好存前端 localStorage）。"""
+    return {"success": True, "data": {"saved": True}}
+
+
+@router.get("/library")
+async def list_library(
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> dict[str, object]:
+    """视频数据库：扫描本机历史解析任务（C 盘 quick-watch 输出目录）。"""
+    manager = _manager(request)
+    tasks = manager.list_library()
+    return {"success": True, "data": tasks}
+
+
 @router.get("/tasks")
 async def list_tasks(
     request: Request,
@@ -158,6 +210,41 @@ async def delete_task(
     path = manager._state_path(task_id)
     path.unlink(missing_ok=True)
     return {"success": True, "data": None}
+
+
+@router.get("/library/{task_dir}/frames/{name}")
+async def get_library_frame(
+    task_dir: str,
+    name: str,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> FileResponse:
+    """视频数据库：返回历史任务目录内的关键帧图片。"""
+    manager = _manager(request)
+    safe = _safe_frame_name(name)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", task_dir):
+        raise AppError("VIDEO_BAD_REQUEST", "非法的任务目录名", status_code=400)
+    library_root = manager._config.library_root
+    frame_path = library_root / task_dir / "frames" / safe
+    if not frame_path.exists():
+        raise AppError("VIDEO_FRAME_NOT_FOUND", "帧图片不存在", status_code=404)
+    return FileResponse(str(frame_path), media_type="image/jpeg")
+
+
+@router.get("/library/{task_dir}/report.html")
+async def get_library_report(
+    task_dir: str,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> FileResponse:
+    """视频数据库：返回历史任务的 HTML 报告。"""
+    manager = _manager(request)
+    if not re.fullmatch(r"[A-Za-z0-9._-]+", task_dir):
+        raise AppError("VIDEO_BAD_REQUEST", "非法的任务目录名", status_code=400)
+    report_path = manager._config.library_root / task_dir / "report.html"
+    if not report_path.exists():
+        raise AppError("VIDEO_NO_REPORT", "该任务没有 HTML 报告", status_code=404)
+    return FileResponse(str(report_path), media_type="text/html; charset=utf-8")
 
 
 @router.get("/tasks/{task_id}/frames/{name}")

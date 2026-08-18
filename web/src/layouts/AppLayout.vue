@@ -76,10 +76,13 @@ import {
   ChatDotRound,
   Collection,
   Files,
+  FolderOpened,
   Setting,
   SwitchButton,
   User,
   VideoCamera,
+  VideoPlay,
+  Monitor,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
 import { embeddedUserManagementHidden, isEmbedded } from '../platform'
@@ -93,19 +96,25 @@ const userManagementHidden = embeddedUserManagementHidden()
 /** 一级模块展开状态（本地会话内保存） */
 const groupOpenMap = ref<Record<string, boolean>>({
   rag: true,
-  video: false,
+  aiVideo: false,
 })
+
+interface NavItem {
+  name: string
+  label: string
+  icon: unknown
+}
 
 interface NavGroup {
   id: string
   label: string
   icon: unknown
   open: boolean
-  items: Array<{ name: string; label: string; icon: unknown }>
+  items: NavItem[]
 }
 
 const navGroups = computed<NavGroup[]>(() => {
-  const ragItems: Array<{ name: string; label: string; icon: unknown }> = [
+  const ragItems: NavItem[] = [
     { name: 'kb-list', label: '知识库', icon: Files },
     { name: 'chat', label: '对话', icon: ChatDotRound },
   ]
@@ -115,6 +124,11 @@ const navGroups = computed<NavGroup[]>(() => {
       ragItems.push({ name: 'users', label: '用户管理', icon: User })
     }
   }
+  const videoItems: NavItem[] = [
+    { name: 'video-analysis', label: '视频分析 agent', icon: VideoPlay },
+    { name: 'video-library', label: '视频数据库', icon: FolderOpened },
+    { name: 'video-settings', label: '系统设置', icon: Monitor },
+  ]
   return [
     {
       id: 'rag',
@@ -124,11 +138,11 @@ const navGroups = computed<NavGroup[]>(() => {
       items: ragItems,
     },
     {
-      id: 'video',
-      label: '视频解析',
+      id: 'aiVideo',
+      label: 'AI 视频分析',
       icon: VideoCamera,
-      open: groupOpenMap.value.video,
-      items: [{ name: 'video-analysis', label: '视频解析', icon: VideoCamera }],
+      open: groupOpenMap.value.aiVideo,
+      items: videoItems,
     },
   ]
 })
@@ -142,12 +156,20 @@ function isActive(name: string): boolean {
 }
 
 /** 当前路由所属的一级模块自动展开 */
+const GROUP_BY_ROUTE: Record<string, string> = {
+  'video-analysis': 'aiVideo',
+  'video-library': 'aiVideo',
+  'video-settings': 'aiVideo',
+}
+
 watch(
   () => route.name,
   () => {
     const name = route.name as string
-    if (name === 'video-analysis') groupOpenMap.value.video = true
-    else if (name && name !== 'login') groupOpenMap.value.rag = true
+    const groupId = GROUP_BY_ROUTE[name] ?? 'rag'
+    if (name && name !== 'login') {
+      groupOpenMap.value[groupId] = true
+    }
   },
   { immediate: true },
 )
@@ -181,29 +203,29 @@ async function handleLogout() {
 }
 
 .app-layout__glow--1 {
-  width: 460px;
-  height: 460px;
-  top: -140px;
-  left: 140px;
-  background: rgba(191, 219, 254, 0.6);
+  width: 520px;
+  height: 520px;
+  top: -160px;
+  left: 120px;
+  background: var(--glow-blue);
 }
 
 .app-layout__glow--2 {
-  width: 400px;
-  height: 400px;
-  bottom: -120px;
-  right: -80px;
-  background: rgba(233, 213, 255, 0.5);
+  width: 440px;
+  height: 440px;
+  bottom: -140px;
+  right: -60px;
+  background: var(--glow-violet);
 }
 
 .app-sidebar {
   position: relative;
   z-index: 1;
-  width: 260px;
+  width: 276px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  padding: 24px 20px;
+  padding: 28px 24px;
   border-right: 1px solid var(--border-subtle);
   border-radius: 0;
 }
@@ -211,21 +233,22 @@ async function handleLogout() {
 .app-sidebar__brand {
   display: flex;
   align-items: baseline;
-  gap: 6px;
-  margin-bottom: 28px;
+  gap: 8px;
+  margin-bottom: 32px;
+  padding: 0 8px;
 }
 
 .app-sidebar__logo {
-  font-size: 16px;
+  font-size: 17px;
   font-weight: 700;
   color: var(--text-primary);
-  letter-spacing: 0.02em;
+  letter-spacing: -0.01em;
 }
 
 .app-sidebar__brand-name {
   font-size: 11px;
   font-weight: 500;
-  color: var(--text-secondary);
+  color: var(--text-tertiary);
   letter-spacing: 0.03em;
   text-transform: uppercase;
 }
@@ -233,8 +256,9 @@ async function handleLogout() {
 .app-sidebar__nav {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 10px;
   flex: 1;
+  overflow-y: auto;
 }
 
 .app-sidebar__group {
@@ -246,16 +270,17 @@ async function handleLogout() {
 .app-sidebar__group-toggle {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 12px 14px;
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-2xl);
   background: transparent;
   color: var(--text-primary);
   font-family: inherit;
   font-size: 14px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   cursor: pointer;
   text-align: left;
 }
@@ -282,25 +307,27 @@ async function handleLogout() {
   display: flex;
   flex-direction: column;
   gap: 2px;
-  margin-top: 2px;
-  padding-left: 22px;
+  margin-top: 4px;
+  padding-left: 34px;
 }
 
 .app-sidebar__nav-item {
   display: flex;
   align-items: center;
-  gap: 10px;
+  gap: 12px;
   width: 100%;
-  padding: 10px 12px;
+  padding: 11px 14px;
   border: none;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-2xl);
   background: transparent;
   color: var(--text-secondary);
   font-family: inherit;
-  font-size: 14px;
+  font-size: 13.5px;
+  letter-spacing: 0;
   cursor: pointer;
   text-align: left;
   text-decoration: none;
+  position: relative;
 }
 
 .app-sidebar__nav-item:hover {
@@ -309,25 +336,30 @@ async function handleLogout() {
 }
 
 .app-sidebar__nav-item--active {
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  background: color-mix(in srgb, var(--accent-blue) 10%, transparent);
   color: var(--accent-blue);
   font-weight: 600;
 }
 
-.app-sidebar__nav-bar {
-  width: 5px;
-  height: 16px;
-  flex-shrink: 0;
+.app-sidebar__nav-item--active::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 4px;
+  height: 18px;
   border-radius: var(--radius-full);
-  background: transparent;
-}
-
-.app-sidebar__nav-item--active .app-sidebar__nav-bar {
   background: var(--accent-blue);
 }
 
 .app-sidebar__nav-icon {
-  font-size: 16px;
+  font-size: 17px;
+  flex-shrink: 0;
+}
+
+.app-sidebar__nav-item--active .app-sidebar__nav-icon {
+  color: var(--accent-blue);
 }
 
 .app-sidebar__user {
@@ -335,7 +367,7 @@ async function handleLogout() {
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding-top: 16px;
+  padding: 20px 8px 0;
   border-top: 1px solid var(--border-subtle);
 }
 
@@ -355,9 +387,10 @@ async function handleLogout() {
 }
 
 .app-sidebar__role {
-  margin-top: 2px;
+  margin-top: 3px;
   font-size: 11px;
   color: var(--text-tertiary);
+  letter-spacing: 0.02em;
 }
 
 .app-sidebar__logout {

@@ -2,8 +2,8 @@
 <template>
   <div class="page video-page">
     <header class="page__header">
-      <h1 class="page__title">视频解析</h1>
-      <span class="page__subtitle">粘贴视频链接或上传本地文件，AI 自动转写并生成关键帧报告</span>
+      <h1 class="page__title">视频分析 agent</h1>
+      <span class="page__subtitle">粘贴视频链接或上传本地文件，AI 自动转写、抽帧并生成分析报告</span>
     </header>
 
     <!-- 输入区 -->
@@ -473,17 +473,17 @@ onUnmounted(() => {
 }
 
 .video-tabs {
-  --el-tabs-header-height: 40px;
+  --el-tabs-header-height: 44px;
 }
 
 .input-row {
   display: flex;
-  gap: 10px;
+  gap: 12px;
   align-items: center;
 }
 
 .frames-select {
-  width: 160px;
+  width: 170px;
   flex-shrink: 0;
 }
 
@@ -492,13 +492,14 @@ onUnmounted(() => {
 }
 
 .input-hint {
-  margin-top: 8px;
+  margin-top: 10px;
   font-size: 12px;
   color: var(--text-tertiary);
 }
 
 .video-uploader {
   width: 100%;
+  border-radius: var(--radius-2xl);
 }
 
 .uploader-icon {
@@ -507,7 +508,7 @@ onUnmounted(() => {
 }
 
 .uploader-text {
-  margin-top: 8px;
+  margin-top: 10px;
   font-size: 14px;
   color: var(--text-secondary);
 }
@@ -523,13 +524,16 @@ onUnmounted(() => {
 }
 
 .upload-submit {
-  margin-top: 16px;
+  margin-top: 18px;
   justify-content: flex-end;
 }
 
 .video-table {
   width: 100%;
   cursor: pointer;
+  --el-table-border-color: var(--border-subtle);
+  --el-table-header-bg-color: transparent;
+  --el-table-row-hover-bg-color: color-mix(in srgb, var(--text-primary) 3%, transparent);
 }
 
 .task-source {
@@ -548,21 +552,22 @@ onUnmounted(() => {
 }
 
 .video-detail {
-  margin-top: 16px;
+  margin-top: 20px;
 }
 
 .detail-progress {
-  padding: 20px 8px;
+  padding: 28px 12px;
 }
 
 .detail-stage {
-  margin-top: 12px;
+  margin-top: 16px;
   font-size: 14px;
+  font-weight: 500;
   color: var(--text-primary);
 }
 
 .detail-source {
-  margin-top: 4px;
+  margin-top: 6px;
   font-size: 12px;
   color: var(--text-tertiary);
 }
@@ -574,8 +579,8 @@ onUnmounted(() => {
 .detail-meta {
   display: flex;
   flex-wrap: wrap;
-  gap: 20px;
-  margin: 12px 0;
+  gap: 24px;
+  margin: 14px 0;
   font-size: 13px;
   color: var(--text-secondary);
 }
@@ -588,8 +593,9 @@ onUnmounted(() => {
 .section-title {
   font-size: 15px;
   font-weight: 600;
+  letter-spacing: -0.01em;
   color: var(--text-primary);
-  margin: 18px 0 10px;
+  margin: 22px 0 12px;
 }
 
 .frame-section {
@@ -598,16 +604,16 @@ onUnmounted(() => {
 
 .frame-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 10px;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 12px;
 }
 
 .frame-item {
   margin: 0;
-  border-radius: var(--radius-lg);
+  border-radius: var(--radius-2xl);
   overflow: hidden;
   border: 1px solid var(--border-subtle);
-  background: color-mix(in srgb, var(--text-primary) 3%, transparent);
+  background: var(--bg-subtle);
 }
 
 .frame-img {
@@ -618,10 +624,11 @@ onUnmounted(() => {
 }
 
 .frame-caption {
-  padding: 4px 8px;
+  padding: 5px 10px;
   font-size: 11px;
   color: var(--text-tertiary);
   font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
 }
 
 .transcript-section {
@@ -629,36 +636,36 @@ onUnmounted(() => {
 }
 
 .transcript-body {
-  max-height: 320px;
+  max-height: 340px;
   overflow-y: auto;
-  padding: 12px 14px;
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  padding: 16px 18px;
+  border-radius: var(--radius-2xl);
+  background: var(--bg-subtle);
   border: 1px solid var(--border-subtle);
   font-family: var(--font-mono, ui-monospace, monospace);
   font-size: 12.5px;
-  line-height: 1.7;
+  line-height: 1.8;
   color: var(--text-secondary);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .qa-section {
-  margin-top: 12px;
+  margin-top: 16px;
 }
 
 .qa-answer {
-  margin-top: 12px;
-  padding: 14px 16px;
-  border-radius: var(--radius-lg);
-  background: color-mix(in srgb, var(--accent-blue) 8%, transparent);
-  border: 1px solid color-mix(in srgb, var(--accent-blue) 20%, transparent);
+  margin-top: 14px;
+  padding: 18px 20px;
+  border-radius: var(--radius-2xl);
+  background: color-mix(in srgb, var(--accent-blue) 6%, transparent);
+  border: 1px solid color-mix(in srgb, var(--accent-blue) 18%, transparent);
 }
 
 .qa-answer-text {
   margin: 0;
   font-size: 14px;
-  line-height: 1.8;
+  line-height: 1.9;
   color: var(--text-primary);
   white-space: pre-wrap;
 }

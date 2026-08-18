@@ -297,6 +297,112 @@ class VideoTaskManager:
                 break
         return states
 
+    # ── 历史视频库（C 盘 quick-watch 输出目录） ──
+
+    def list_library(self) -> list[dict[str, Any]]:
+        """扫描历史视频库：读取每个任务目录的 manifest.json / summary.json。
+
+        返回按时间倒序的任务列表，含标题、摘要、关键帧、报告等元数据。
+        """
+        library_root = self._config.library_root
+        if not library_root.exists():
+            return []
+
+        tasks: list[dict[str, Any]] = []
+        for entry in sorted(
+            library_root.iterdir(),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        ):
+            # 跳过软链（latest）与隐藏目录
+            if entry.is_symlink() or not entry.is_dir() or entry.name.startswith("."):
+                continue
+            if entry.name in ("latest", "tasks.json", "knowledge_index.ndjson"):
+                continue
+            task = self._scan_library_task(entry)
+            if task is not None:
+                tasks.append(task)
+        return tasks
+
+    def _scan_library_task(self, task_dir: Path) -> dict[str, Any] | None:
+        """读取单个历史任务目录，构造展示数据。"""
+        manifest_path = task_dir / "manifest.json"
+        summary_path = task_dir / "summary.json"
+        report_html = task_dir / "report.html"
+
+        data: dict[str, Any] = {
+            "task_id": task_dir.name,
+            "output_dir": str(task_dir),
+            "title": task_dir.name,
+            "summary": "",
+            "keypoints": [],
+            "transcript": "",
+            "keyframes": [],
+            "has_report": report_html.exists(),
+            "created_at": None,
+            "source": "",
+            "duration_seconds": None,
+            "cost": None,
+        }
+
+        manifest: dict[str, Any] = {}
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if not isinstance(manifest, dict):
+                    manifest = {}
+            except (json.JSONDecodeError, OSError):
+                manifest = {}
+            data["source"] = str(manifest.get("source") or "")
+            data["created_at"] = str(manifest.get("created_at") or "")
+            report = manifest.get("report") or {}
+            if isinstance(report, dict):
+                data["title"] = str(report.get("title") or "") or data["title"]
+                data["duration_seconds"] = report.get("duration_seconds")
+                data["keyframes"] = report.get("keyframes") or []
+                data["cost"] = report.get("cost")
+                data["transcript_source"] = report.get("transcript_source")
+
+        if summary_path.exists():
+            try:
+                summary = json.loads(summary_path.read_text(encoding="utf-8"))
+            except (json.JSONDecodeError, OSError):
+                summary = {}
+            data["summary"] = str(summary.get("summary") or "")
+            data["keypoints"] = list(summary.get("keypoints") or [])
+            if summary.get("title_override"):
+                data["title"] = str(summary["title_override"])
+            data["visual_notes"] = list(summary.get("visual_notes") or [])
+
+        # 转录：缓存 manifest（~/.cache/quick-watch/tasks/<fingerprint>/manifest.json）
+        fingerprint = manifest.get("fingerprint") if isinstance(manifest, dict) else None
+        if not data["transcript"] and fingerprint:
+            cache_path = Path.home() / ".cache" / "quick-watch" / "tasks" / str(fingerprint) / "manifest.json"
+            if cache_path.exists():
+                try:
+                    cache = json.loads(cache_path.read_text(encoding="utf-8"))
+                    data["transcript"] = str(cache.get("transcript") or "")
+                except (json.JSONDecodeError, OSError):
+                    pass
+
+        # 关键帧文件实际路径映射（供前端展示）
+        frames_dir = task_dir / "frames"
+        resolved_frames = []
+        for kf in data["keyframes"]:
+            if not isinstance(kf, dict):
+                continue
+            path = str(kf.get("path") or "")
+            if not path and frames_dir.exists():
+                # 无 path 时按顺序匹配帧文件
+                continue
+            resolved_frames.append({**kf, "path": path})
+        if not resolved_frames and frames_dir.exists():
+            for f in sorted(frames_dir.glob("*.jpg")):
+                resolved_frames.append({"path": str(f), "timestamp_seconds": 0})
+        data["keyframes"] = resolved_frames
+
+        return data
+
     # ── 启动 / 停止 ──
 
     def start_background(self, task_id: str, source: str, *, frames: int = 12) -> None:

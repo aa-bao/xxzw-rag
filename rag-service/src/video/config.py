@@ -35,6 +35,12 @@ DEFAULT_UPLOAD_DIR = Path(os.environ.get(
     r"E:\dev\project\rag-database\rag-service\data\video_uploads",
 )).expanduser()
 
+# 历史视频库：quick-watch skill 默认输出根目录（C 盘用户目录下）
+DEFAULT_LIBRARY_ROOT = Path(os.environ.get(
+    "QUICK_WATCH_LIBRARY_ROOT",
+    str(Path.home() / "quick-watch"),
+)).expanduser()
+
 
 @dataclass(frozen=True)
 class VideoConfig:
@@ -46,6 +52,7 @@ class VideoConfig:
     task_root: Path
     output_root: Path
     upload_dir: Path
+    library_root: Path
     python: str
     dashscope_api_key: str
 
@@ -56,6 +63,7 @@ class VideoConfig:
         task_root = Path(os.environ.get("QUICK_WATCH_TASK_ROOT", str(DEFAULT_TASK_ROOT)))
         output_root = Path(os.environ.get("QUICK_WATCH_OUTPUT_ROOT", str(DEFAULT_OUTPUT_ROOT)))
         upload_dir = Path(os.environ.get("QUICK_WATCH_UPLOAD_DIR", str(DEFAULT_UPLOAD_DIR)))
+        library_root = Path(os.environ.get("QUICK_WATCH_LIBRARY_ROOT", str(DEFAULT_LIBRARY_ROOT)))
 
         # 本机 Python：优先 venv 的 python，其次系统 python
         python = os.environ.get("QUICK_WATCH_PYTHON", "")
@@ -69,6 +77,7 @@ class VideoConfig:
             task_root=task_root,
             output_root=output_root,
             upload_dir=upload_dir,
+            library_root=library_root,
             python=python,
             dashscope_api_key=os.environ.get("DASHSCOPE_API_KEY", ""),
         )
