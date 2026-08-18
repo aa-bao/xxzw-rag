@@ -189,6 +189,9 @@ class VideoAgentSettingsService:
                 restored = VideoAgentSettings.from_row(row)
                 # 空串字段（未保存过）回落 .env 默认，保证开箱即用
                 defaults = VideoAgentSettings.from_env()
+                import os as _os
+                with open(r"E:\dev\project\rag-database\rag-service\_restore_debug.txt", "a", encoding="utf-8") as _f:
+                    _f.write(f"row.asr_api_key={row.asr_api_key!r} env={_os.environ.get('VOLC_ASR_API_KEY')!r} defaults={defaults.asr_api_key!r}\n")
                 if not restored.chat_base_url:
                     restored.chat_base_url = defaults.chat_base_url
                 if not restored.chat_model:
@@ -208,9 +211,11 @@ class VideoAgentSettingsService:
                 self._settings.chat_model = restored.chat_model
                 self._settings.chat_api_key = restored.chat_api_key
                 self._settings.frames = restored.frames
-        except Exception:
-            # DB 不可用（如离线启动）不阻断，保留 .env 默认值
-            pass
+        except Exception as exc:  # noqa: BLE001
+            # DB 不可用（如离线启动）不阻断，保留 .env 默认值；记日志便于诊断
+            import logging
+
+            logging.getLogger(__name__).warning("video settings restore failed: %s", exc)
 
     async def save(self, session: AsyncSession) -> None:
         await VideoSettingRepository(session).upsert(self._settings.to_storage())

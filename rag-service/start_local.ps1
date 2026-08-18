@@ -11,7 +11,7 @@ $envPath = Join-Path $Root ".env"
 if (-not (Test-Path $envPath)) {
     throw "Missing .env file: $envPath"
 }
-Get-Content $envPath | ForEach-Object {
+Get-Content $envPath -Encoding UTF8 | ForEach-Object {
     $line = $_.Trim()
     if ($line -and -not $line.StartsWith("#") -and $line.Contains("=")) {
         $key, $value = $line.Split("=", 2)

@@ -161,25 +161,7 @@ class VideoTaskManager:
         settings = self._get_settings()
         output_root = self._config.output_root / task_id
         output_root.mkdir(parents=True, exist_ok=True)
-
-        timings: dict[str, float] = {}
         started = time.perf_counter()
-        transcript = ""
-        transcript_source = ""
-        acquisition_source = ""
-        caption_ratio = 0.0
-        caption_gaps: list[tuple[float, float]] = []
-        asr_ranges: list[tuple[float, float]] = []
-        duration = 0.0
-        title = ""
-        uploader = ""
-        keyframes: list[dict[str, Any]] = []
-        failed_chunks: list[int] = []
-        partial = False
-        no_speech_detected = False
-        asr_billable_seconds = 0.0
-        asr_usage_events: list[dict[str, Any]] = []
-        chunk_timings: list[float] = []
 
         try:
             await self._pipeline_body(
@@ -225,6 +207,25 @@ class VideoTaskManager:
         started: float,
         state: dict[str, Any],
     ) -> None:
+        # 流水线局部状态
+        timings: dict[str, float] = {}
+        transcript = ""
+        transcript_source = ""
+        acquisition_source = ""
+        caption_ratio = 0.0
+        caption_gaps: list[tuple[float, float]] = []
+        asr_ranges: list[tuple[float, float]] = []
+        duration = 0.0
+        title = ""
+        uploader = ""
+        keyframes: list[dict[str, Any]] = []
+        failed_chunks: list[int] = []
+        partial = False
+        no_speech_detected = False
+        asr_billable_seconds = 0.0
+        asr_usage_events: list[dict[str, Any]] = []
+        chunk_timings: list[float] = []
+
         with tempfile.TemporaryDirectory(prefix="rag-video-") as tmp:
             work = Path(tmp)
             cues: list[dict[str, Any]] = []

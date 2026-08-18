@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import base64
+import os
 import time
 from pathlib import Path
 
@@ -20,7 +21,11 @@ import httpx
 
 from src.video.transcript import format_time, format_utterance_entries
 
-RECOGNIZE_URL = "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash"
+# 端点可用 VOLC_ASR_ENDPOINT 覆盖（网关代理 / 测试桩场景）
+RECOGNIZE_URL = os.environ.get(
+    "VOLC_ASR_ENDPOINT",
+    "https://openspeech.bytedance.com/api/v3/auc/bigmodel/recognize/flash",
+)
 
 
 class AsrError(RuntimeError):
