@@ -168,8 +168,25 @@ function formatTime(iso: string | null): string {
 onMounted(load)
 </script>
 <style scoped>
-.library-page {
+.page {
+  height: 100%;
   overflow-y: auto;
+  padding: 24px;
+}
+
+.page__header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 24px;
+}
+
+.page__title {
+  font-size: 24px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  line-height: 1.2;
+  color: var(--text-primary);
 }
 
 .page__subtitle {
@@ -177,6 +194,10 @@ onMounted(load)
   margin-top: 6px;
   font-size: 13px;
   color: var(--text-secondary);
+}
+
+.library-page {
+  overflow-y: auto;
 }
 
 .library-empty {

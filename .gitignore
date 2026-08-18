@@ -14,13 +14,21 @@ web/dist/
 
 # 本地开发 / 工具生成
 rag-service/cookies.txt
-.claude/scheduled_tasks.lock
 .serena/
 test/
 .worktrees/
 
+# Agent 工具本地状态（不入库）
+.agents/
+.claude/
+.codex/
+.workbuddy/
+.mcp.json
+
+# 本地服务日志
+rag-service/uvicorn.local.*.log
+
 # CI 门禁报告产物（scripts/generate-gate-report.py 默认输出）
 /gate-report.json
-# Retrieval benchmark vector caches (large, reproducible from source data)
-rag-service/artifacts/*.embeddings.json
-rag-service/artifacts/*.embeddings.json.*.part.json
+# Retrieval benchmark 产物（大文件，可由源码复现）
+rag-service/artifacts/
