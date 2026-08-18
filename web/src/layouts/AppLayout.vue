@@ -560,7 +560,7 @@ async function handleLogout() {
   overflow: hidden;
 }
 
-/* 主内容区背景：细腻网格 + 顶部微光，打破单调 */
+/* 主内容区背景：细腻网格铺满全页面 */
 .app-main::before {
   content: '';
   position: absolute;
@@ -571,16 +571,5 @@ async function handleLogout() {
     linear-gradient(var(--chart-grid) 1px, transparent 1px),
     linear-gradient(90deg, var(--chart-grid) 1px, transparent 1px);
   background-size: 56px 56px;
-  mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, rgba(0,0,0,0.6), transparent 78%);
-  -webkit-mask-image: radial-gradient(ellipse 90% 70% at 50% 0%, rgba(0,0,0,0.6), transparent 78%);
-}
-
-.app-main::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  z-index: -1;
-  pointer-events: none;
-  background: radial-gradient(ellipse 70% 40% at 50% -10%, rgba(0, 122, 255, 0.06), transparent 70%);
 }
 </style>
