@@ -46,6 +46,38 @@ class ModelSetting(Base):
     )
 
 
+class VideoSetting(Base):
+    """视频解析 agent 设置持久化，单行（id=1）。
+
+    - ASR 必配：asr_model + asr_api_key（独立于系统模型配置）。
+    - Chat 可覆盖：chat_base_url / chat_model / chat_api_key 为空 = 复用系统
+      model_relay 配置；非空时用视频 agent 独立配置。
+    - api_key 明文存储（内部系统可接受），响应中绝不返回明文，只暴露 has_*。
+    """
+
+    __tablename__ = "video_setting"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    asr_provider: Mapped[str] = mapped_column(String(50), nullable=False, server_default=text("'volcengine'"))
+    asr_model: Mapped[str] = mapped_column(String(200), nullable=False, server_default=text("'bigmodel'"))
+    # 新版控制台单一 Key（X-Api-Key）
+    asr_api_key: Mapped[str] = mapped_column(String(1000), nullable=False, server_default=text("''"))
+    # 旧版控制台 App ID + Access Token（新版 Key 未配时使用）
+    asr_app_id: Mapped[str] = mapped_column(String(200), nullable=False, server_default=text("''"))
+    asr_access_token: Mapped[str] = mapped_column(String(1000), nullable=False, server_default=text("''"))
+    # 空串 = 复用系统 model_relay
+    chat_base_url: Mapped[str] = mapped_column(String(500), nullable=False, server_default=text("''"))
+    chat_model: Mapped[str] = mapped_column(String(200), nullable=False, server_default=text("''"))
+    chat_api_key: Mapped[str] = mapped_column(String(1000), nullable=False, server_default=text("''"))
+    frames: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("12"))
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        server_default=CURRENT_TIMESTAMP,
+        server_onupdate=CURRENT_TIMESTAMP,
+    )
+
+
 class User(Base):
     __tablename__ = "rag_user"
     __table_args__ = (

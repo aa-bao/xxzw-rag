@@ -156,6 +156,20 @@
           <span class="meta-item" v-if="costAsr"><b>ASR 成本：</b>¥{{ costAsr }}</span>
         </div>
 
+        <!-- 摘要与要点 -->
+        <div v-if="summaryText || summaryKeypoints.length" class="summary-section">
+          <div v-if="summaryText" class="summary-block">
+            <h3 class="section-title">摘要</h3>
+            <p class="summary-text">{{ summaryText }}</p>
+          </div>
+          <div v-if="summaryKeypoints.length" class="summary-block">
+            <h3 class="section-title">要点</h3>
+            <ul class="summary-list">
+              <li v-for="(kp, i) in summaryKeypoints" :key="i" class="summary-li">{{ kp }}</li>
+            </ul>
+          </div>
+        </div>
+
         <!-- 关键帧时间轴 -->
         <div v-if="active.keyframes.length" class="frame-section">
           <h3 class="section-title">关键帧</h3>
@@ -380,6 +394,16 @@ const costAsr = computed(() => {
   return typeof c?.estimated_asr_cny === 'number' ? String(c.estimated_asr_cny) : ''
 })
 
+const summaryText = computed(() => {
+  const s = active.value?.summary as { summary?: string } | null
+  return typeof s?.summary === 'string' ? (s.summary as string) : ''
+})
+
+const summaryKeypoints = computed(() => {
+  const s = active.value?.summary as { keypoints?: string[] } | null
+  return Array.isArray(s?.keypoints) ? (s.keypoints as string[]) : []
+})
+
 const progressPercent = computed(() => {
   const stage = active.value?.stage
   if (stage === 'complete') return 100
@@ -407,10 +431,14 @@ function stageText(stage: string | null): string {
   const map: Record<string, string> = {
     starting: '正在启动解析引擎…',
     running: '解析进行中…',
-    task_started: '任务已启动…',
+    downloading: '正在获取视频/字幕…',
     captions_accepted: '已获取平台字幕…',
     audio_downloaded: '音频下载完成…',
     audio_extracted: '音频提取完成，正在转写…',
+    transcribing: '正在语音转写（ASR）…',
+    extracting_frames: '正在提取关键帧…',
+    summarizing: '正在生成摘要…',
+    rendering_report: '正在渲染报告…',
     frame_extract_failed: '关键帧提取失败（不影响转录）',
     complete: '解析完成',
   }
@@ -617,6 +645,36 @@ onUnmounted(() => {
   letter-spacing: -0.01em;
   color: var(--text-primary);
   margin: 22px 0 12px;
+}
+
+.summary-section {
+  margin-top: 8px;
+}
+
+.summary-block {
+  margin-bottom: 4px;
+}
+
+.summary-text {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.9;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+}
+
+.summary-list {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.summary-li {
+  font-size: 13.5px;
+  line-height: 1.7;
+  color: var(--text-secondary);
 }
 
 .frame-section {

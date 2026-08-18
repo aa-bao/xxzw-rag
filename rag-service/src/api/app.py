@@ -20,6 +20,7 @@ from src.api.router_users import router as users_router
 from src.video.config import VideoConfig
 from src.video.router import router as video_router
 from src.video.service import VideoTaskManager
+from src.video.settings import VideoAgentSettings, VideoAgentSettingsService
 from src.db.models import ModelSetting
 from src.ingestion.worker import IngestWorker
 from src.models.client import ModelRelayClient
@@ -76,9 +77,14 @@ def create_app(
         else None
     )
 
-    # 视频解析 agent（quick-watch 集成；独立于数据库，本机 Python 执行）
+    # 视频解析 agent（流水线内建；独立于数据库，本机 Python 执行）
     video_config = VideoConfig.load()
-    app.state.video_manager = VideoTaskManager(video_config)
+    app.state.video_settings = VideoAgentSettings.from_env()
+    app.state.video_manager = VideoTaskManager(
+        video_config,
+        get_settings=lambda: app.state.video_settings,
+        app=app,
+    )
 
     if session_factory is None:
         from src.db.session import create_engine as db_create_engine
@@ -95,6 +101,11 @@ def create_app(
 
     app.state.session_factory = session_factory
 
+    # 视频 agent 设置服务（DB 恢复 + 保存）
+    app.state.video_settings_service = VideoAgentSettingsService(
+        app.state.video_settings, session_factory
+    )
+
     # 运行时 model_relay 配置：默认来自 config.yaml，启动时从 DB 恢复已保存值
     runtime_relay = RuntimeModelRelay.from_frozen(settings.model_relay)
     app.state.runtime_relay = runtime_relay
@@ -108,6 +119,9 @@ def create_app(
 
     @app.on_event("startup")
     async def _startup_restore_and_probe() -> None:
+        # 0. 从 DB 恢复视频 agent 已保存的设置（ASR / Chat / 帧数）
+        await app.state.video_settings_service.restore()
+
         # 1. 从 DB 恢复已保存的模型配置（若有），并重置维度缓存
         try:
             async with app.state.session_factory() as session:

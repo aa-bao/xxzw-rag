@@ -16,7 +16,18 @@ export interface VideoTask {
   transcript: string | null
   keyframes: Array<{ path: string; timestamp_seconds: number }>
   cost: Record<string, unknown> | null
+  summary: VideoSummary | null
   frames_requested?: number
+  transcript_source?: string | null
+}
+
+/** 视频摘要（summary.json） */
+export interface VideoSummary {
+  title?: string
+  summary?: string
+  keypoints?: string[]
+  visual_notes?: string[]
+  mode?: string
 }
 
 export interface SubmitResult {
@@ -96,21 +107,56 @@ export function libraryReportUrl(taskDir: string): string {
   return applicationUrl('/api/video/library/' + encodeURIComponent(taskDir) + '/report.html')
 }
 
-// ── 系统设置 ──
+// ── agent设置 ──
 
 export interface VideoEnvInfo {
-  script?: string
+  pipeline?: string
   python?: string
   library_root?: string
   output_root?: string
   task_root?: string
   upload_dir?: string
-  dashscope_ready?: boolean
+  asr_configured?: boolean
 }
 
-export interface VideoPrefs {
+export interface VideoSettings {
+  asr_provider: string
+  asr_model: string
+  asr_resource_id?: string
+  has_asr_api_key: boolean
+  has_asr_app_id: boolean
+  has_asr_access_token: boolean
+  chat_base_url: string
+  chat_model: string
+  has_chat_api_key: boolean
   frames: number
-  qa_model: string
+}
+
+export interface VideoSettingsUpdate {
+  asr_model?: string
+  asr_api_key?: string
+  asr_app_id?: string
+  asr_access_token?: string
+  chat_base_url?: string
+  chat_model?: string
+  chat_api_key?: string
+  frames?: number
+}
+
+export interface VideoSettingsTestResult {
+  ok: boolean
+  message?: string
+}
+
+export interface VideoSettingsTestRequest {
+  mode: 'asr' | 'chat'
+  asr_model?: string
+  asr_api_key?: string
+  asr_app_id?: string
+  asr_access_token?: string
+  chat_base_url?: string
+  chat_model?: string
+  chat_api_key?: string
 }
 
 /** 视频解析运行环境信息 */
@@ -119,15 +165,22 @@ export async function getVideoEnv(): Promise<VideoEnvInfo> {
   return resp.data
 }
 
-/** 读取解析偏好 */
-export async function getVideoPrefs(): Promise<VideoPrefs> {
-  const resp = await client.get<VideoPrefs>('/video/prefs')
+/** 读取视频 agent 设置 */
+export async function getVideoSettings(): Promise<VideoSettings> {
+  const resp = await client.get<VideoSettings>('/video/settings')
   return resp.data
 }
 
-/** 保存解析偏好 */
-export async function saveVideoPrefs(prefs: VideoPrefs): Promise<void> {
-  await client.put('/video/prefs', prefs)
+/** 更新视频 agent 设置 */
+export async function updateVideoSettings(settings: VideoSettingsUpdate): Promise<VideoSettings> {
+  const resp = await client.put<VideoSettings>('/video/settings', settings)
+  return resp.data
+}
+
+/** 测试连接（asr / chat） */
+export async function testVideoSettings(body: VideoSettingsTestRequest): Promise<VideoSettingsTestResult> {
+  const resp = await client.post<VideoSettingsTestResult>('/video/settings/test', body)
+  return resp.data
 }
 
 /** 关键帧图片 URL */

@@ -3,7 +3,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import KnowledgeBase, ModelSetting, User
+from src.db.models import KnowledgeBase, ModelSetting, User, VideoSetting
 from src.shared.errors import AppError
 
 
@@ -154,5 +154,48 @@ class ModelSettingRepository:
             setting.embedding_model = values["embedding_model"]
             setting.embedding_base_url = values.get("embedding_base_url")
             setting.embedding_api_key = values.get("embedding_api_key")
+        await self._session.commit()
+
+
+class VideoSettingRepository:
+    """视频解析 agent 设置持久化：单行（id=1）的读与 upsert。"""
+
+    SETTING_ID = 1
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    async def get(self) -> VideoSetting | None:
+        return await self._session.scalar(
+            select(VideoSetting).where(VideoSetting.id == self.SETTING_ID)
+        )
+
+    async def upsert(self, values: dict[str, str | int]) -> None:
+        """已有行则更新，否则插入 id=1。"""
+        setting = await self.get()
+        if setting is None:
+            setting = VideoSetting(
+                id=self.SETTING_ID,
+                asr_provider=str(values["asr_provider"]),
+                asr_model=str(values["asr_model"]),
+                asr_api_key=str(values["asr_api_key"]),
+                asr_app_id=str(values.get("asr_app_id") or ""),
+                asr_access_token=str(values.get("asr_access_token") or ""),
+                chat_base_url=str(values["chat_base_url"]),
+                chat_model=str(values["chat_model"]),
+                chat_api_key=str(values["chat_api_key"]),
+                frames=int(values["frames"]),
+            )
+            self._session.add(setting)
+        else:
+            setting.asr_provider = str(values["asr_provider"])
+            setting.asr_model = str(values["asr_model"])
+            setting.asr_api_key = str(values["asr_api_key"])
+            setting.asr_app_id = str(values.get("asr_app_id") or "")
+            setting.asr_access_token = str(values.get("asr_access_token") or "")
+            setting.chat_base_url = str(values["chat_base_url"])
+            setting.chat_model = str(values["chat_model"])
+            setting.chat_api_key = str(values["chat_api_key"])
+            setting.frames = int(values["frames"])
         await self._session.commit()
 

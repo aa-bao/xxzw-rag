@@ -1,43 +1,56 @@
-"""视频解析任务服务：异步执行 quick_watch.py，持久化状态与结果。
+"""视频解析任务服务：纯 asyncio 原生流水线（流水线内建，无外部脚本依赖）。
 
 任务生命周期（文件系统状态机）：
   submitted → running → complete | failed
 
 状态文件：<task_root>/<task_id>.json
   {
-    "task_id": str,
-    "source": str,            // 原始输入（URL 或本地文件路径）
-    "kind": "url" | "file",
-    "status": "submitted|running|complete|failed",
-    "created_at": iso,
-    "updated_at": iso,
-    "output_dir": str | None,     // quick-watch 交付物目录（含 manifest.json / frames / transcript）
-    "cache_manifest": str | None, // quick-watch 缓存 manifest 路径
-    "error": str | None,
-    "stage": str | None,          // 最近进度阶段
-    "report": dict | None,        // quick-watch report JSON
-    "transcript": str | None,     // 转录全文
-    "keyframes": list,            // [{path, timestamp_seconds}]
-    "cost": dict | None,          // 成本明细
-    "pid": int | None,            // 运行中进程 PID
+    "task_id", "source", "kind", "status", "created_at", "updated_at",
+    "output_dir", "cache_manifest"(None), "error", "stage", "report",
+    "transcript", "keyframes", "cost", "frames_requested", "transcript_source",
+    "summary", "pid"(None)
   }
+
+流水线：下载/字幕 → 音频 → 静音检测/分片 → ASR 转写（并发，与关键帧并行）
+      → 摘要（Chat 模型）→ HTML 报告。
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import shutil
-import subprocess
+import tempfile
 import threading
+import time
 import uuid
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
+from src.video import acquire, audio as video_audio, asr as video_asr, frames as video_frames
 from src.video.config import VideoConfig
+from src.video.report import render_report_html
+from src.video.settings import VideoAgentSettings
+from src.video.summary import generate_summary
+from src.video.transcript import (
+    estimate_text_tokens,
+    merge_chunk_results,
+    merge_caption_and_asr,
+    merge_resume_results,
+)
 
-# 每任务最大运行时长（quick-watch 默认 run-budget 600s，加上抽取与渲染余量）
-_TASK_TIMEOUT_SECONDS = 900
+# 每任务最大运行时长
+_TASK_TIMEOUT_SECONDS = 1800
+
+# ASR 并发 worker 数
+_ASR_WORKERS = 3
+
+# 字幕覆盖率达标阈值（免 ASR）
+_CAPTION_MIN_COVERAGE = 0.85
+
+# 成本参考价（元/音频秒；以火山引擎计费规则为准，此处为历史参考值）
+REFERENCE_PRICE_CNY_PER_SECOND = 0.00022
+TOKEN_PRICE_CNY_PER_TOKEN = 0.00010875
 
 # 任务状态常量
 STATUS_SUBMITTED = "submitted"
@@ -53,8 +66,15 @@ class VideoTaskError(RuntimeError):
 class VideoTaskManager:
     """单机任务管理器：文件持久化 + asyncio 后台执行。"""
 
-    def __init__(self, config: VideoConfig) -> None:
+    def __init__(
+        self,
+        config: VideoConfig,
+        get_settings: Callable[[], VideoAgentSettings],
+        app=None,
+    ) -> None:
         self._config = config
+        self._get_settings = get_settings
+        self._app = app
         self._lock = threading.Lock()
         self._running: dict[str, asyncio.Task] = {}
 
@@ -81,10 +101,16 @@ class VideoTaskManager:
             encoding="utf-8",
         )
 
+    def _update_stage(self, task_id: str, stage: str) -> None:
+        state = self._load(task_id)
+        if state is not None:
+            state["stage"] = stage
+            self._save(state)
+
     # ── 任务提交 ──
 
     def submit(self, source: str, *, kind: str = "url", frames: int = 12) -> dict[str, Any]:
-        """登记新任务并返回初始状态。调用方（router）负责实际启动后台执行。"""
+        """登记新任务并返回初始状态。调用方（router）负责启动后台执行。"""
         task_id = uuid.uuid4().hex[:16]
         state: dict[str, Any] = {
             "task_id": task_id,
@@ -101,6 +127,7 @@ class VideoTaskManager:
             "transcript": None,
             "keyframes": [],
             "cost": None,
+            "summary": None,
             "pid": None,
             "frames_requested": frames,
         }
@@ -109,8 +136,21 @@ class VideoTaskManager:
 
     # ── 后台执行 ──
 
-    async def run(self, task_id: str, source: str, *, frames: int = 12) -> None:
-        """在事件循环中执行 quick_watch.py 并更新任务状态。"""
+    async def run(self, task_id: str, source: str, *, frames: int = 12, kind: str = "url") -> None:
+        try:
+            await asyncio.wait_for(
+                self._run_pipeline(task_id, source, frames=frames, kind=kind),
+                timeout=_TASK_TIMEOUT_SECONDS,
+            )
+        except asyncio.TimeoutError:
+            self._fail(task_id, f"任务超时（{_TASK_TIMEOUT_SECONDS // 60} 分钟）")
+        except asyncio.CancelledError:
+            self._fail(task_id, "任务已取消")
+            raise
+        except Exception as exc:  # noqa: BLE001 — 任务失败统一落盘
+            self._fail(task_id, f"任务执行异常: {exc}")
+
+    async def _run_pipeline(self, task_id: str, source: str, *, frames: int, kind: str) -> None:
         state = self._load(task_id)
         if state is None:
             return
@@ -118,155 +158,416 @@ class VideoTaskManager:
         state["stage"] = "starting"
         self._save(state)
 
-        script = self._config.quick_watch_script
-        if not script.exists():
-            self._fail(task_id, f"quick-watch 脚本不存在: {script}")
-            return
-
-        # 输出目录：按任务 id 隔离，避免 quick-watch 默认 ~/quick-watch 目录混乱
+        settings = self._get_settings()
         output_root = self._config.output_root / task_id
         output_root.mkdir(parents=True, exist_ok=True)
 
-        cmd = [
-            self._config.python,
-            str(script),
-            source,
-            "--frames", str(frames),
-            "--output-root", str(output_root),
-        ]
-        # 继承父进程环境，覆盖 ASR 所需变量
-        env = dict(__import__("os").environ)
-        env["PYTHONIOENCODING"] = "utf-8"
-        if self._config.dashscope_api_key:
-            env["DASHSCOPE_API_KEY"] = self._config.dashscope_api_key
+        timings: dict[str, float] = {}
+        started = time.perf_counter()
+        transcript = ""
+        transcript_source = ""
+        acquisition_source = ""
+        caption_ratio = 0.0
+        caption_gaps: list[tuple[float, float]] = []
+        asr_ranges: list[tuple[float, float]] = []
+        duration = 0.0
+        title = ""
+        uploader = ""
+        keyframes: list[dict[str, Any]] = []
+        failed_chunks: list[int] = []
+        partial = False
+        no_speech_detected = False
+        asr_billable_seconds = 0.0
+        asr_usage_events: list[dict[str, Any]] = []
+        chunk_timings: list[float] = []
 
         try:
-            proc = await asyncio.create_subprocess_exec(
-                *cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-                cwd=str(self._config.quick_watch_root),
+            await self._pipeline_body(
+                task_id, source, frames, kind, settings, output_root, started,
+                state,
             )
-            state = self._load(task_id) or {}
-            state["pid"] = proc.pid
-            state["stage"] = "running"
-            self._save(state)
-
-            # 流式读取 stdout 解析进度（emit JSON lines）
-            stdout_task = asyncio.create_task(self._drain_stdout(task_id, proc.stdout))
-            stderr_task = asyncio.create_task(self._drain_stderr(task_id, proc.stderr))
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=_TASK_TIMEOUT_SECONDS)
-            except asyncio.TimeoutError:
-                proc.kill()
-                self._fail(task_id, "任务超时（15 分钟）")
-                return
-
-            await stdout_task
-            await stderr_task
-
-            if proc.returncode != 0:
-                stderr_text = stderr_task.result() or ""
-                self._fail(task_id, f"quick_watch 退出码 {proc.returncode}: {stderr_text[-500:]}")
-                return
-
-            self._finalize(task_id)
-        except FileNotFoundError:
-            self._fail(task_id, f"找不到 Python 解释器: {self._config.python}")
-        except Exception as exc:  # noqa: BLE001 — 任务失败统一落盘
-            self._fail(task_id, f"任务执行异常: {exc}")
-
-    async def _drain_stdout(self, task_id: str, stream: asyncio.StreamReader | None) -> None:
-        """逐行读取 stdout；解析 emit 的 JSON lines 更新 stage。"""
-        if stream is None:
-            return
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            text = line.decode("utf-8", errors="replace").strip()
-            if not text:
-                continue
-            try:
-                payload = json.loads(text)
-            except json.JSONDecodeError:
-                continue
-            # stdout 可能包含非 JSON 进度行（数字/普通文本）；只处理对象行
-            if not isinstance(payload, dict):
-                continue
-            stage = payload.get("stage")
-            if stage:
-                state = self._load(task_id)
-                if state is not None:
-                    state["stage"] = stage
-                    state["updated_at"] = datetime.now(UTC).isoformat(timespec="seconds")
-                    self._save(state)
-
-    async def _drain_stderr(self, task_id: str, stream: asyncio.StreamReader | None) -> str:
-        """收集 stderr 文本（失败时用于诊断）。"""
-        if stream is None:
-            return ""
-        chunks: list[str] = []
-        while True:
-            line = await stream.readline()
-            if not line:
-                break
-            chunks.append(line.decode("utf-8", errors="replace").strip())
-        return "\n".join(chunks)
-
-    def _finalize(self, task_id: str) -> None:
-        """quick_watch 成功退出后，从缓存 manifest 读取完整结果。
-
-        quick-watch 将完整报告（report/transcript/keyframes/cost）写入
-        ~/.cache/quick-watch/tasks/<fingerprint>/manifest.json，交付物目录
-        manifest.json 只有任务元数据。本方法优先读缓存 manifest。
-        """
-        state = self._load(task_id)
-        if state is None:
-            return
-        output_root = self._config.output_root / task_id
-        state["output_dir"] = str(output_root)
-
-        cache: dict[str, Any] | None = None
-        # 1) 缓存 manifest（含完整报告）
-        cache_dir = Path.home() / ".cache" / "quick-watch" / "tasks"
-        if cache_dir.exists():
-            # 按修改时间找最新的 manifest（本任务刚写入）
-            candidates = sorted(
-                cache_dir.glob("*/manifest.json"),
-                key=lambda p: p.stat().st_mtime,
-                reverse=True,
-            )
-            for cand in candidates[:5]:
+        except Exception:
+            # 失败收尾：等待关键帧协程完成（若有），并把产物写入状态
+            frames_task = getattr(self, "_pending_frames", None)
+            if frames_task is not None and not frames_task.done():
                 try:
-                    data = json.loads(cand.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError):
-                    continue
-                # 用 output_dir 或 source 关联到本任务
-                out_dir = str(data.get("output_dir") or "")
-                src = str(data.get("source") or "")
-                if out_dir == str(output_root) or src == state.get("source"):
-                    cache = data
-                    state["cache_manifest"] = str(cand)
-                    break
-        # 2) 交付物 manifest.json（兜底：任务元数据）
-        deliverable = output_root / "manifest.json"
-        if cache is None and deliverable.exists():
-            try:
-                cache = json.loads(deliverable.read_text(encoding="utf-8"))
-            except (json.JSONDecodeError, OSError):
-                cache = {}
+                    kf = await frames_task
+                except Exception:
+                    kf = []
+                s = self._load(task_id) or {}
+                if kf:
+                    s["keyframes"] = kf
+                s["output_dir"] = str(output_root)
+                self._save(s)
+            raise
 
-        if cache is not None:
-            report = cache.get("report") if isinstance(cache.get("report"), dict) else {}
-            state["report"] = report
-            state["transcript"] = str(cache.get("transcript") or "")
-            state["keyframes"] = report.get("keyframes") or []
-            state["cost"] = report.get("cost") if isinstance(report.get("cost"), dict) else {}
+        # ── 收尾：写入状态 ──
+        state = self._load(task_id) or {}
         state["status"] = STATUS_COMPLETE
         state["stage"] = "complete"
+        state["output_dir"] = str(output_root)
+        state["report"] = self._final_report
+        state["transcript"] = self._final_transcript
+        state["keyframes"] = self._final_keyframes
+        state["cost"] = (self._final_report or {}).get("cost") or {}
+        state["summary"] = self._final_summary
+        state["transcript_source"] = self._final_transcript_source
         self._save(state)
+
+    async def _pipeline_body(
+        self,
+        task_id: str,
+        source: str,
+        frames: int,
+        kind: str,
+        settings: VideoAgentSettings,
+        output_root: Path,
+        started: float,
+        state: dict[str, Any],
+    ) -> None:
+        with tempfile.TemporaryDirectory(prefix="rag-video-") as tmp:
+            work = Path(tmp)
+            cues: list[dict[str, Any]] = []
+            audio_path: Path | None = None
+            direct_source = source
+            download_referer: str | None = None
+            browser_cookies: Path | None = None
+            browser_referer: str | None = None
+
+            # ── 获取阶段 ──
+            if kind == "url":
+                self._update_stage(task_id, "downloading")
+                if acquire.is_weixin_sph_url(source):
+                    try:
+                        resolved = await asyncio.to_thread(
+                            acquire.resolve_weixin_source, source, 30.0
+                        )
+                        direct_source = str(resolved["url"])
+                        download_referer = source
+                        title = title or str(resolved.get("title") or "")
+                        uploader = uploader or str(resolved.get("uploader") or "")
+                    except Exception as exc:  # noqa: BLE001
+                        # 视频号解析失败，回退 yt-dlp 直连
+                        pass
+
+                caption: dict[str, Any] = {}
+                try:
+                    caption = await asyncio.to_thread(
+                        acquire.try_url_captions, direct_source, work / "captions", 45.0
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    caption = {"transcript": "", "cues": [], "duration": 0.0, "error": str(exc)}
+                caption_text = str(caption.get("transcript") or "")
+                cues = list(caption.get("cues") or [])
+                duration = float(caption.get("duration") or duration)
+                if not (acquire.is_weixin_sph_url(source) and title):
+                    title = str(caption.get("title") or "") or title
+                    uploader = str(caption.get("uploader") or "") or uploader
+                coverage = acquire.caption_coverage(cues, duration)
+                caption_ratio = float(coverage["ratio"])
+                caption_gaps = list(coverage["gaps"])
+
+                if caption_text and duration and not acquire.caption_needs_asr(coverage, _CAPTION_MIN_COVERAGE):
+                    transcript = caption_text
+                    transcript_source = "captions"
+                    acquisition_source = "captions"
+                    audio_path = None
+                    self._update_stage(task_id, "captions_accepted")
+                else:
+                    audio_path, acquisition_source, _browser_cues, browser_cookies, browser_referer = (
+                        await asyncio.to_thread(
+                            acquire.acquire_url_audio,
+                            direct_source,
+                            work,
+                            300.0,
+                            self._config.cookie_file,
+                            download_referer,
+                            (
+                                (lambda: str(acquire.resolve_weixin_source(source, 30.0)["url"]))
+                                if acquire.is_weixin_sph_url(source)
+                                else None
+                            ),
+                        )
+                    )
+                    if not duration:
+                        duration = await asyncio.to_thread(acquire.media_duration, audio_path)
+                    self._update_stage(task_id, "audio_downloaded")
+            else:
+                # 本地文件
+                local_path = Path(source).expanduser()
+                if not local_path.is_file():
+                    raise VideoTaskError(f"本地视频文件不存在: {local_path}")
+                duration = await asyncio.to_thread(acquire.media_duration, local_path)
+                audio_path = work / "audio.mp3"
+                await asyncio.to_thread(acquire.extract_local_audio, local_path, audio_path, 180.0)
+                acquisition_source = "local-file"
+                self._update_stage(task_id, "audio_extracted")
+
+            # ── 并行：ASR 转写 与 关键帧提取 ──
+            frames_task: asyncio.Task | None = None
+            if frames > 0 and duration:
+                frames_task = asyncio.create_task(
+                    self._extract_frames(
+                        task_id,
+                        source,
+                        direct_source,
+                        frames,
+                        duration,
+                        browser_cookies,
+                        browser_referer or download_referer,
+                    )
+                )
+                self._pending_frames = frames_task
+
+            if audio_path is not None:
+                self._update_stage(task_id, "transcribing")
+                silence_points = await asyncio.to_thread(
+                    video_audio.detect_silence_points, audio_path, 120.0
+                )
+                if cues:
+                    coverage = acquire.caption_coverage(cues, duration)
+                    caption_gaps = list(coverage["gaps"])
+                    asr_ranges = acquire.choose_asr_ranges(coverage, duration, _CAPTION_MIN_COVERAGE)
+                else:
+                    asr_ranges = [(0.0, duration)]
+                plan = video_audio.plan_asr_chunks(duration, silence_points, asr_ranges)
+
+                if plan:
+                    if not settings.asr_configured:
+                        raise VideoTaskError(
+                            "ASR 凭证未配置：请在 agent设置页填写火山引擎语音技术 API Key "
+                            "（或 App ID + Access Token），或配置 .env 的 VOLC_ASR_*"
+                        )
+                    # 切分所有分片
+                    chunk_paths = await asyncio.to_thread(
+                        video_audio.split_audio_plan,
+                        audio_path,
+                        work / "chunks",
+                        plan,
+                        240.0,
+                    )
+                    path_by_index = {idx: p for (idx, _s, _e), p in zip(plan, chunk_paths)}
+                    range_by_index = {idx: (s, e) for idx, s, e in plan}
+                    # 并发转写（信号量限流）
+                    sem = asyncio.Semaphore(_ASR_WORKERS)
+
+                    async def _one(idx: int, start: float) -> dict[str, Any]:
+                        async with sem:
+                            return await asyncio.to_thread(
+                                video_asr.transcribe_chunk,
+                                idx,
+                                start,
+                                path_by_index[idx],
+                                settings,
+                                120.0,
+                                1,
+                            )
+
+                    results = list(await asyncio.gather(*(_one(idx, start) for idx, start, _e in plan)))
+                    results = merge_resume_results([], results)
+                    for result in results:
+                        result_duration = range_by_index[int(result["index"])][1] - range_by_index[int(result["index"])][0]
+                        result["audio_seconds"] = round(result_duration, 3)
+                        result["billable_audio_seconds"] = round(result_duration, 3) if not result.get("error") else 0.0
+                        result["total_attempts"] = int(result.get("attempts") or 0)
+                        if int(result.get("attempts") or 0):
+                            asr_usage_events.append({
+                                "chunk_index": int(result["index"]),
+                                "api_calls": int(result["attempts"]),
+                                "audio_seconds_per_call": round(result_duration, 3),
+                                "billable_audio_seconds": result["billable_audio_seconds"],
+                            })
+                    chunk_timings = [float(r.get("elapsed_seconds") or 0) for r in sorted(results, key=lambda r: int(r["index"]))]
+                    asr_billable_seconds = sum(float(e["billable_audio_seconds"]) for e in asr_usage_events)
+
+                    chunk_durations: dict[int, float] = {idx: e - s for idx, s, e in plan}
+                    merged = merge_chunk_results(results, chunk_durations)
+                    transcript = (
+                        merge_caption_and_asr(cues, results, chunk_durations)
+                        if cues
+                        else str(merged["transcript"])
+                    )
+                    completed = {int(r["index"]) for r in results if r.get("error") is None}
+                    failed_chunks = sorted(set(list(merged["failed_chunks"]) + [i for i, _s, _e in plan if i not in completed]))
+                    partial = bool(failed_chunks)
+                    no_speech_detected = not partial and not transcript.strip()
+                    transcript_source = (
+                        f"captions + {settings.asr_model} gap fill"
+                        if cues
+                        else f"{settings.asr_model} ({len(plan)} VAD chunks, {_ASR_WORKERS} workers)"
+                    )
+            elif caption_text:
+                transcript = caption_text
+                transcript_source = "captions"
+
+            if frames_task is not None:
+                keyframes = await frames_task
+            if not transcript.strip() and not no_speech_detected:
+                raise VideoTaskError("未生成任何转录内容")
+
+            # ── 摘要（Chat 模型；失败不致命）──
+            self._update_stage(task_id, "summarizing")
+            summary: dict[str, Any] = {}
+            try:
+                summary = await generate_summary(
+                    transcript,
+                    settings,
+                    self._app,
+                    title_hint=title or "",
+                    output_path=output_root / "summary.json",
+                )
+            except Exception:  # noqa: BLE001
+                summary = {}
+
+            # ── HTML 报告（失败不致命）──
+            self._update_stage(task_id, "rendering_report")
+            report_id = state.get("task_id") or task_id
+            report = self._build_report(
+                task_id=report_id,
+                source=source,
+                status="partial" if partial else "complete",
+                title=title,
+                uploader=uploader,
+                duration=duration,
+                acquisition_source=acquisition_source,
+                transcript_source=transcript_source,
+                caption_ratio=caption_ratio,
+                partial=partial,
+                no_speech_detected=no_speech_detected,
+                failed_chunks=failed_chunks,
+                keyframes=keyframes,
+                timings=timings,
+                started=started,
+                chunk_timings=chunk_timings,
+                transcript=transcript,
+                asr_billable_seconds=asr_billable_seconds,
+                output_dir=str(output_root),
+            )
+            try:
+                render_report_html(
+                    output_path=output_root / "report.html",
+                    report=report,
+                    transcript=transcript,
+                    keyframes=keyframes,
+                    summary=summary,
+                )
+            except Exception as exc:  # noqa: BLE001 — 报告失败不影响结果
+                report.setdefault("report_warning", f"报告渲染失败: {exc}")
+
+        # 结果交给 _run_pipeline 统一收尾
+        self._final_report = report
+        self._final_transcript = transcript
+        self._final_keyframes = keyframes
+        self._final_summary = summary
+        self._final_transcript_source = transcript_source
+
+    async def _extract_frames(
+        self,
+        task_id: str,
+        source: str,
+        direct_source: str,
+        frames: int,
+        duration: float,
+        browser_cookies: Path | None,
+        referer: str | None,
+    ) -> list[dict[str, Any]]:
+        """（必要时）下载低码率视频并提取关键帧；与 ASR 并行。"""
+        kf: list[dict[str, Any]] = []
+        video_for_frames: Path | None = None
+        try:
+            self._update_stage(task_id, "extracting_frames")
+            if acquire.is_url(source):
+                video_for_frames = await asyncio.to_thread(
+                    acquire.download_url_video,
+                    direct_source,
+                    Path(tempfile.gettempdir()) / f"rag-video-frames-{task_id}",
+                    300.0,
+                    referer=referer,
+                    cookies=browser_cookies,
+                    max_height=360,
+                )
+            else:
+                video_for_frames = Path(source).expanduser()
+
+            if video_for_frames is None:
+                return kf
+
+            frames_dir = Path(tempfile.gettempdir()) / f"rag-video-frames-{task_id}" / "out"
+            frames_result, _meta = await asyncio.to_thread(
+                video_frames.extract_keyframes,
+                str(video_for_frames),
+                frames_dir,
+                512,
+                frames,
+                None,
+                duration,
+                True,
+            )
+            kf = [
+                {"timestamp_seconds": f["timestamp_seconds"], "path": f["path"]}
+                for f in frames_result
+            ]
+            # 复制到输出目录，保证自包含
+            if kf:
+                frames_dest = self._config.output_root / task_id / "frames"
+                frames_dest.mkdir(parents=True, exist_ok=True)
+                for kfi in kf:
+                    src = Path(kfi["path"])
+                    if src.is_file():
+                        shutil.copy2(src, frames_dest / src.name)
+                # path 指向输出目录副本
+                for kfi in kf:
+                    kfi["path"] = str(frames_dest / Path(kfi["path"]).name)
+        except Exception as exc:  # noqa: BLE001 — 帧提取失败不致命
+            self._update_stage(task_id, "frame_extract_failed")
+        return kf
+
+    @staticmethod
+    def _build_report(**kw: Any) -> dict[str, Any]:
+        started = kw["started"]
+        timings = dict(kw["timings"])
+        timings["total"] = round(time.perf_counter() - started, 3)
+        timings["chunk_api"] = kw["chunk_timings"]
+        transcript = kw["transcript"]
+        usage = {
+            "transcript_characters": len(transcript),
+            "estimated_transcript_tokens": estimate_text_tokens(transcript),
+            "image_tokens": 0,
+            "summary_tokens": "unavailable",
+        }
+        cost = {
+            "estimated_asr_cny": round(
+                kw["asr_billable_seconds"] * REFERENCE_PRICE_CNY_PER_SECOND, 4
+            ),
+            "estimated_asr_audio_seconds": round(kw["asr_billable_seconds"], 3),
+            "rate_reference_cny_per_audio_second": REFERENCE_PRICE_CNY_PER_SECOND,
+            "estimated_transcript_token_cny": round(
+                estimate_text_tokens(transcript) * TOKEN_PRICE_CNY_PER_TOKEN, 4
+            ),
+            "token_price_reference_cny_per_token": TOKEN_PRICE_CNY_PER_TOKEN,
+        }
+        return {
+            "task_id": kw["task_id"],
+            "source": kw["source"],
+            "status": kw["status"],
+            "title": kw["title"],
+            "uploader": kw["uploader"],
+            "duration_seconds": round(kw["duration"], 3) if kw["duration"] else "unavailable",
+            "audio_only": True,
+            "acquisition_source": kw["acquisition_source"],
+            "transcript_source": kw["transcript_source"],
+            "caption_coverage_ratio": kw["caption_ratio"],
+            "partial": kw["partial"],
+            "no_speech_detected": kw["no_speech_detected"],
+            "failed_chunks": kw["failed_chunks"],
+            "keyframes": kw["keyframes"],
+            "timings_seconds": timings,
+            "usage": usage,
+            "cost": cost,
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "report_id": kw["task_id"],
+            "output_dir": kw["output_dir"],
+        }
 
     def _fail(self, task_id: str, message: str) -> None:
         state = self._load(task_id)
@@ -300,10 +601,7 @@ class VideoTaskManager:
     # ── 历史视频库（C 盘 quick-watch 输出目录） ──
 
     def list_library(self) -> list[dict[str, Any]]:
-        """扫描历史视频库：读取每个任务目录的 manifest.json / summary.json。
-
-        返回按时间倒序的任务列表，含标题、摘要、关键帧、报告等元数据。
-        """
+        """扫描历史视频库：读取每个任务目录的 manifest.json / summary.json。"""
         library_root = self._config.library_root
         if not library_root.exists():
             return []
@@ -314,7 +612,6 @@ class VideoTaskManager:
             key=lambda p: p.stat().st_mtime,
             reverse=True,
         ):
-            # 跳过软链（latest）与隐藏目录
             if entry.is_symlink() or not entry.is_dir() or entry.name.startswith("."):
                 continue
             if entry.name in ("latest", "tasks.json", "knowledge_index.ndjson"):
@@ -325,7 +622,7 @@ class VideoTaskManager:
         return tasks
 
     def _scan_library_task(self, task_dir: Path) -> dict[str, Any] | None:
-        """读取单个历史任务目录，构造展示数据。"""
+        """读取单个历史任务目录，构造展示数据（兼容旧 quick-watch 交付物）。"""
         manifest_path = task_dir / "manifest.json"
         summary_path = task_dir / "summary.json"
         report_html = task_dir / "report.html"
@@ -385,16 +682,13 @@ class VideoTaskManager:
                 except (json.JSONDecodeError, OSError):
                     pass
 
-        # 关键帧文件实际路径映射（供前端展示）
+        # 关键帧文件实际路径映射
         frames_dir = task_dir / "frames"
         resolved_frames = []
         for kf in data["keyframes"]:
             if not isinstance(kf, dict):
                 continue
             path = str(kf.get("path") or "")
-            if not path and frames_dir.exists():
-                # 无 path 时按顺序匹配帧文件
-                continue
             resolved_frames.append({**kf, "path": path})
         if not resolved_frames and frames_dir.exists():
             for f in sorted(frames_dir.glob("*.jpg")):
@@ -405,10 +699,10 @@ class VideoTaskManager:
 
     # ── 启动 / 停止 ──
 
-    def start_background(self, task_id: str, source: str, *, frames: int = 12) -> None:
+    def start_background(self, task_id: str, source: str, *, frames: int = 12, kind: str = "url") -> None:
         """启动后台任务（在事件循环内调度）。"""
         loop = asyncio.get_event_loop()
-        task = loop.create_task(self.run(task_id, source, frames=frames))
+        task = loop.create_task(self.run(task_id, source, frames=frames, kind=kind))
         self._running[task_id] = task
         task.add_done_callback(lambda _t: self._running.pop(task_id, None))
 
