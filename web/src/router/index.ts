@@ -31,6 +31,12 @@ const router = createRouter({
           meta: { title: '对话' },
         },
         {
+          path: 'video',
+          name: 'video-analysis',
+          component: () => import('../views/VideoAnalysisView.vue'),
+          meta: { title: '视频解析' },
+        },
+        {
           path: 'settings',
           name: 'settings',
           component: () => import('../views/SettingsView.vue'),

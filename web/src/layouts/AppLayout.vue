@@ -10,26 +10,26 @@
       </div>
 
       <nav class="app-sidebar__nav" aria-label="主导航">
-        <div class="app-sidebar__group">
+        <div v-for="group in navGroups" :key="group.id" class="app-sidebar__group">
           <button
             class="app-sidebar__group-toggle btn-press"
-            :aria-expanded="groupOpen"
-            aria-label="RAG 知识库"
-            @click="groupOpen = !groupOpen"
+            :aria-expanded="group.open"
+            :aria-label="group.label"
+            @click="toggleGroup(group)"
           >
             <span class="app-sidebar__nav-bar" aria-hidden="true"></span>
-            <el-icon class="app-sidebar__nav-icon" aria-hidden="true"><Collection /></el-icon>
-            <span class="app-sidebar__group-name">RAG 知识库</span>
+            <el-icon class="app-sidebar__nav-icon" aria-hidden="true"><component :is="group.icon" /></el-icon>
+            <span class="app-sidebar__group-name">{{ group.label }}</span>
             <el-icon
               class="app-sidebar__group-caret"
-              :class="{ 'is-open': groupOpen }"
+              :class="{ 'is-open': group.open }"
               aria-hidden="true"
             ><ArrowDown /></el-icon>
           </button>
 
-          <div v-show="groupOpen" class="app-sidebar__group-items">
+          <div v-show="group.open" class="app-sidebar__group-items">
             <RouterLink
-              v-for="item in navItems"
+              v-for="item in group.items"
               :key="item.name"
               :to="{ name: item.name }"
               class="app-sidebar__nav-item btn-press"
@@ -69,7 +69,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowDown,
@@ -79,6 +79,7 @@ import {
   Setting,
   SwitchButton,
   User,
+  VideoCamera,
 } from '@element-plus/icons-vue'
 import { useAuthStore } from '../stores/auth'
 import { embeddedUserManagementHidden, isEmbedded } from '../platform'
@@ -89,26 +90,67 @@ const router = useRouter()
 const embedded = isEmbedded()
 /** 用户管理属于本地账号体系，生产嵌入由主系统管角色：嵌入模式隐藏入口 */
 const userManagementHidden = embeddedUserManagementHidden()
-/** RAG 知识库一级目录默认展开 */
-const groupOpen = ref(true)
+/** 一级模块展开状态（本地会话内保存） */
+const groupOpenMap = ref<Record<string, boolean>>({
+  rag: true,
+  video: false,
+})
 
-const navItems = computed(() => {
-  const items: Array<{ name: string; label: string; icon: unknown }> = [
+interface NavGroup {
+  id: string
+  label: string
+  icon: unknown
+  open: boolean
+  items: Array<{ name: string; label: string; icon: unknown }>
+}
+
+const navGroups = computed<NavGroup[]>(() => {
+  const ragItems: Array<{ name: string; label: string; icon: unknown }> = [
     { name: 'kb-list', label: '知识库', icon: Files },
     { name: 'chat', label: '对话', icon: ChatDotRound },
   ]
   if (auth.isAdmin) {
-    items.push({ name: 'settings', label: '设置', icon: Setting })
+    ragItems.push({ name: 'settings', label: '设置', icon: Setting })
     if (!userManagementHidden) {
-      items.push({ name: 'users', label: '用户管理', icon: User })
+      ragItems.push({ name: 'users', label: '用户管理', icon: User })
     }
   }
-  return items
+  return [
+    {
+      id: 'rag',
+      label: 'RAG 知识库',
+      icon: Collection,
+      open: groupOpenMap.value.rag,
+      items: ragItems,
+    },
+    {
+      id: 'video',
+      label: '视频解析',
+      icon: VideoCamera,
+      open: groupOpenMap.value.video,
+      items: [{ name: 'video-analysis', label: '视频解析', icon: VideoCamera }],
+    },
+  ]
 })
+
+function toggleGroup(group: NavGroup): void {
+  groupOpenMap.value[group.id] = !group.open
+}
 
 function isActive(name: string): boolean {
   return route.name === name
 }
+
+/** 当前路由所属的一级模块自动展开 */
+watch(
+  () => route.name,
+  () => {
+    const name = route.name as string
+    if (name === 'video-analysis') groupOpenMap.value.video = true
+    else if (name && name !== 'login') groupOpenMap.value.rag = true
+  },
+  { immediate: true },
+)
 
 const navMotion = {
   initial: { opacity: 0, x: -8 },

@@ -17,6 +17,9 @@ from src.api.router_platform import router as platform_router
 from src.api.router_settings import router as settings_router
 from src.api.router_structured import router as structured_router
 from src.api.router_users import router as users_router
+from src.video.config import VideoConfig
+from src.video.router import router as video_router
+from src.video.service import VideoTaskManager
 from src.db.models import ModelSetting
 from src.ingestion.worker import IngestWorker
 from src.models.client import ModelRelayClient
@@ -72,6 +75,10 @@ def create_app(
         if app.state.platform_config.control_plane_base_url
         else None
     )
+
+    # 视频解析 agent（quick-watch 集成；独立于数据库，本机 Python 执行）
+    video_config = VideoConfig.load()
+    app.state.video_manager = VideoTaskManager(video_config)
 
     if session_factory is None:
         from src.db.session import create_engine as db_create_engine
@@ -149,6 +156,9 @@ def create_app(
         await app.state.model_relay_client._client.aclose()
         if app.state.control_plane_client is not None:
             await app.state.control_plane_client.close()
+        video_manager = getattr(app.state, "video_manager", None)
+        if video_manager is not None:
+            video_manager.shutdown()
 
     app.include_router(auth_router)
     app.include_router(kb_router)
@@ -158,6 +168,7 @@ def create_app(
     app.include_router(settings_router)
     app.include_router(structured_router)
     app.include_router(platform_router)
+    app.include_router(video_router)
 
     @app.exception_handler(AppError)
     async def _app_error_handler(request: Request, exc: AppError) -> JSONResponse:
