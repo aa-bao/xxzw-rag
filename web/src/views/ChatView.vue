@@ -50,14 +50,25 @@
                 </span>
                 <span class="chat-view__conv-kb">{{ convKbLabel(conv) }}</span>
               </button>
-              <el-button
-                text
-                class="chat-view__conv-del btn-press"
-                aria-label="删除会话"
-                @click.stop="handleDeleteConversation(conv)"
-              >
-                <el-icon><Delete /></el-icon>
-              </el-button>
+              <template v-if="renamingId !== conv.id">
+                <el-button
+                  text
+                  class="chat-view__conv-rename-btn btn-press"
+                  aria-label="重命名会话"
+                  title="重命名"
+                  @click.stop="startRename(conv)"
+                >
+                  <el-icon><EditPen /></el-icon>
+                </el-button>
+                <el-button
+                  text
+                  class="chat-view__conv-del btn-press"
+                  aria-label="删除会话"
+                  @click.stop="handleDeleteConversation(conv)"
+                >
+                  <el-icon><Delete /></el-icon>
+                </el-button>
+              </template>
             </li>
           </ul>
           <p v-else class="chat-view__convs-empty">暂无会话，点击「新对话」创建</p>
@@ -256,7 +267,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ChatDotRound, Close, Delete, Document, Plus, Promotion } from '@element-plus/icons-vue'
+import { ChatDotRound, Close, Delete, Document, EditPen, Plus, Promotion } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createConversation,
@@ -858,8 +869,8 @@ onMounted(async () => {
   width: 100%;
   padding: 2px 6px;
   border: 1px solid var(--accent-blue);
-  border-radius: var(--radius-md);
-  background: var(--bg-card);
+  border-radius: var(--radius-lg);
+  background: var(--bg-elevated);
   color: var(--text-primary);
   font: inherit;
   font-size: 13px;
@@ -877,6 +888,22 @@ onMounted(async () => {
 }
 
 .chat-view__conv-btn--active .chat-view__conv-kb {
+  color: var(--accent-blue);
+}
+
+.chat-view__conv-rename-btn {
+  flex-shrink: 0;
+  opacity: 0;
+  padding: 4px;
+  color: var(--text-secondary);
+}
+
+.chat-view__conv:hover .chat-view__conv-rename-btn,
+.chat-view__conv:focus-within .chat-view__conv-rename-btn {
+  opacity: 1;
+}
+
+.chat-view__conv-rename-btn:hover {
   color: var(--accent-blue);
 }
 
