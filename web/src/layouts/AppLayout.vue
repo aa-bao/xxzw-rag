@@ -1,8 +1,7 @@
 <template>
   <div class="app-layout">
-    <!-- 全局环境光 -->
+    <!-- 全局环境光（右上角） -->
     <div class="app-layout__glow app-layout__glow--1" aria-hidden="true"></div>
-    <div class="app-layout__glow app-layout__glow--2" aria-hidden="true"></div>
 
     <aside v-if="!embedded" class="app-sidebar">
       <!-- 侧栏内部环境光（透过玻璃可见） -->
@@ -46,7 +45,6 @@
               role="listitem"
               v-motion="navMotion"
             >
-              <span class="app-sidebar__nav-dot" aria-hidden="true"></span>
               <el-icon class="app-sidebar__nav-icon" aria-hidden="true"><component :is="item.icon" /></el-icon>
               <span class="app-sidebar__nav-label">{{ item.label }}</span>
             </RouterLink>
@@ -132,7 +130,7 @@ const navGroups = computed<NavGroup[]>(() => {
     { name: 'chat', label: '对话', icon: ChatDotRound },
   ]
   if (auth.isAdmin) {
-    ragItems.push({ name: 'settings', label: '设置', icon: Setting })
+    ragItems.push({ name: 'settings', label: '知识库设置', icon: Setting })
     if (!userManagementHidden) {
       ragItems.push({ name: 'users', label: '用户管理', icon: User })
     }
@@ -140,7 +138,7 @@ const navGroups = computed<NavGroup[]>(() => {
   const videoItems: NavItem[] = [
     { name: 'video-analysis', label: '视频分析 agent', icon: VideoPlay },
     { name: 'video-library', label: '视频数据库', icon: FolderOpened },
-    { name: 'video-settings', label: '设置', icon: Setting },
+    { name: 'video-settings', label: 'agent设置', icon: Setting },
   ]
   return [
     {
@@ -224,16 +222,8 @@ async function handleLogout() {
   width: 560px;
   height: 560px;
   top: -180px;
-  left: 80px;
+  right: 80px;
   background: var(--glow-blue);
-}
-
-.app-layout__glow--2 {
-  width: 480px;
-  height: 480px;
-  bottom: -160px;
-  right: -40px;
-  background: var(--glow-violet);
 }
 
 /* ── 侧边栏：Apple 玻璃 ── */
@@ -416,7 +406,7 @@ async function handleLogout() {
   flex-direction: column;
   gap: 2px;
   margin: 4px 0 6px;
-  padding-left: 40px;
+  padding-left: 20px;
 }
 
 .app-sidebar__nav-item {
@@ -448,20 +438,6 @@ async function handleLogout() {
   background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
   color: var(--accent-blue);
   font-weight: 600;
-}
-
-/* 激活指示点：融入圆角背景，不再硬突 */
-.app-sidebar__nav-dot {
-  width: 5px;
-  height: 5px;
-  border-radius: var(--radius-full);
-  background: transparent;
-  flex-shrink: 0;
-  transition: background-color 0.15s ease;
-}
-
-.app-sidebar__nav-item--active .app-sidebar__nav-dot {
-  background: var(--accent-blue);
 }
 
 .app-sidebar__nav-icon {

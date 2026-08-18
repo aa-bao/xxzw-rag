@@ -39,7 +39,6 @@
 
   /* 全局环境光晕（blur 后柔化为弥散光） */
   --glow-blue: rgba(0, 122, 255, 0.28);
-  --glow-violet: rgba(88, 86, 214, 0.24);
 }
 
 /* Tailwind 主题扩展：允许 tailwind 类（bg-primary 等）引用令牌 */
