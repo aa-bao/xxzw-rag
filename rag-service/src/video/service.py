@@ -19,6 +19,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import shutil
 import tempfile
 import threading
@@ -62,6 +63,19 @@ STATUS_FAILED = "failed"
 
 class VideoTaskError(RuntimeError):
     """视频任务领域错误（对外以 AppError 包装）。"""
+
+
+def _iso_ts(value: object) -> float | None:
+    """把 ISO 时间串转成秒级时间戳；解析失败返回 None。"""
+    if not value:
+        return None
+    try:
+        from datetime import datetime
+
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        return dt.timestamp()
+    except (ValueError, TypeError):
+        return None
 
 
 class VideoTaskManager:
@@ -196,6 +210,33 @@ class VideoTaskManager:
         state["summary"] = self._final_summary
         state["transcript_source"] = self._final_transcript_source
         self._save(state)
+
+        # 输出目录落一份自包含 manifest + transcript（视频库/外部工具可读）
+        try:
+            output_root.mkdir(parents=True, exist_ok=True)
+            manifest_out: dict[str, Any] = {
+                "task_id": task_id,
+                "source": source,
+                "kind": state.get("kind") or "url",
+                "created_at": state.get("created_at") or "",
+                "output_dir": str(output_root),
+                "status": STATUS_COMPLETE,
+                "transcript": self._final_transcript,
+                "transcript_source": self._final_transcript_source,
+                "report": self._final_report or {},
+                "summary": self._final_summary or {},
+                "keyframes": self._final_keyframes,
+                "cost": (self._final_report or {}).get("cost") or {},
+            }
+            (output_root / "manifest.json").write_text(
+                json.dumps(manifest_out, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+            (output_root / "transcript.txt").write_text(
+                (self._final_transcript or "") + "\n", encoding="utf-8"
+            )
+        except OSError:
+            pass
 
     async def _pipeline_body(
         self,
@@ -600,50 +641,87 @@ class VideoTaskManager:
                 break
         return states
 
-    # ── 历史视频库（C 盘 quick-watch 输出目录） ──
+    # ── 历史视频库（旧 quick-watch 输出目录 + 新流水线输出目录） ──
+
+    @staticmethod
+    def _classify_source(source: str) -> str:
+        """按来源 URL/路径归类：weixin / bilibili / douyin / youtube / local / other。"""
+        s = (source or "").strip()
+        m = re.match(r"^https?://([^/]+)", s)
+        if not m:
+            return "local"
+        host = m.group(1).lower()
+        if "weixin.qq.com" in host or "finder.video.qq.com" in host or host.startswith("sph"):
+            return "weixin"
+        if "bilibili.com" in host or "b23.tv" in host:
+            return "bilibili"
+        if "douyin.com" in host or "iesdouyin.com" in host:
+            return "douyin"
+        if "youtube.com" in host or "youtu.be" in host:
+            return "youtube"
+        return "other"
+
+    def _library_roots(self) -> list[Path]:
+        roots: list[Path] = []
+        if self._config.library_root.exists():
+            roots.append(self._config.library_root)
+        if self._config.output_root.exists() and self._config.output_root != self._config.library_root:
+            roots.append(self._config.output_root)
+        return roots
 
     def list_library(self) -> list[dict[str, Any]]:
-        """扫描历史视频库：读取每个任务目录的 manifest.json / summary.json。"""
-        library_root = self._config.library_root
-        if not library_root.exists():
+        """扫描视频库：旧 quick-watch 目录 + 本系统输出目录，读取每任务产物。"""
+        roots = self._library_roots()
+        if not roots:
             return []
 
+        seen: set[str] = set()
         tasks: list[dict[str, Any]] = []
-        for entry in sorted(
-            library_root.iterdir(),
-            key=lambda p: p.stat().st_mtime,
-            reverse=True,
-        ):
-            if entry.is_symlink() or not entry.is_dir() or entry.name.startswith("."):
-                continue
-            if entry.name in ("latest", "tasks.json", "knowledge_index.ndjson"):
-                continue
-            task = self._scan_library_task(entry)
-            if task is not None:
-                tasks.append(task)
+        for root in roots:
+            entries: list[Path] = []
+            for p in root.iterdir():
+                # 先过滤再排序：latest 可能是悬空软链，stat() 会抛 FileNotFoundError
+                if p.is_symlink() or not p.is_dir() or p.name.startswith("."):
+                    continue
+                if p.name in ("latest", "tasks.json", "knowledge_index.ndjson"):
+                    continue
+                entries.append(p)
+            for entry in entries:
+                if entry.name in seen:
+                    continue
+                seen.add(entry.name)
+                task = self._scan_library_task(entry)
+                if task is not None:
+                    tasks.append(task)
+
+        tasks.sort(key=lambda t: _iso_ts(t.get("created_at")) or 0.0, reverse=True)
         return tasks
 
     def delete_library_task(self, task_dir: str) -> Path:
-        """删除历史视频库中的一个任务目录（不可恢复）。
+        """删除视频库中的一个任务目录（不可恢复）。
 
         路径安全：task_dir 仅允许 [A-Za-z0-9._-]，且解析后必须位于
-        library_root 之内（防路径穿越）。同时从 tasks.json 索引中移除条目。
+        library_root / output_root 之内（防路径穿越）。同时清理所在根的 tasks.json。
         """
         import re as _re
         import shutil as _shutil
 
         if not _re.fullmatch(r"[A-Za-z0-9._-]+", task_dir):
             raise VideoTaskError(f"非法的任务目录名: {task_dir!r}")
-        library_root = self._config.library_root.resolve()
-        target = (library_root / task_dir).resolve()
-        if not (str(target) == str(library_root) or str(target).startswith(str(library_root) + os.sep)):
-            raise VideoTaskError("任务目录越界，拒绝删除")
-        if not target.is_dir() or target.name == "latest":
+        target: Path | None = None
+        target_root: Path | None = None
+        for root in self._library_roots():
+            candidate = (root / task_dir).resolve()
+            if str(candidate).startswith(str(root.resolve()) + os.sep) and candidate.is_dir():
+                target = candidate
+                target_root = root
+                break
+        if target is None or target_root is None:
             raise VideoTaskError(f"任务目录不存在: {task_dir}")
         _shutil.rmtree(target, ignore_errors=False)
 
-        # 从顶层 tasks.json 索引移除该任务条目
-        index_path = library_root / "tasks.json"
+        # 从所在根的 tasks.json 索引移除该任务条目
+        index_path = target_root / "tasks.json"
         if index_path.is_file():
             try:
                 index = json.loads(index_path.read_text(encoding="utf-8"))
@@ -662,10 +740,27 @@ class VideoTaskManager:
         return target
 
     def _scan_library_task(self, task_dir: Path) -> dict[str, Any] | None:
-        """读取单个历史任务目录，构造展示数据（兼容旧 quick-watch 交付物）。"""
+        """读取单个任务目录，构造展示数据。
+
+        兼容两种布局：
+        - 旧 quick-watch 交付物（manifest.json + summary.json + frames/ + report.html）
+        - 本系统流水线输出（manifest.json / summary.json / report.html / frames/ / transcript.txt）
+        无任何产物的目录（如误放的任务嵌套目录）返回 None 跳过。
+        """
         manifest_path = task_dir / "manifest.json"
         summary_path = task_dir / "summary.json"
         report_html = task_dir / "report.html"
+        transcript_path = task_dir / "transcript.txt"
+        frames_dir = task_dir / "frames"
+
+        has_any = (
+            manifest_path.exists()
+            or summary_path.exists()
+            or report_html.exists()
+            or (frames_dir.is_dir() and any(frames_dir.glob("*.jpg")))
+        )
+        if not has_any:
+            return None
 
         data: dict[str, Any] = {
             "task_id": task_dir.name,
@@ -680,6 +775,7 @@ class VideoTaskManager:
             "source": "",
             "duration_seconds": None,
             "cost": None,
+            "source_kind": "other",
         }
 
         manifest: dict[str, Any] = {}
@@ -699,6 +795,9 @@ class VideoTaskManager:
                 data["keyframes"] = report.get("keyframes") or []
                 data["cost"] = report.get("cost")
                 data["transcript_source"] = report.get("transcript_source")
+            # 本系统 manifest：transcript 在顶层
+            if not data["transcript"]:
+                data["transcript"] = str(manifest.get("transcript") or "")
 
         if summary_path.exists():
             try:
@@ -711,7 +810,12 @@ class VideoTaskManager:
                 data["title"] = str(summary["title_override"])
             data["visual_notes"] = list(summary.get("visual_notes") or [])
 
-        # 转录：缓存 manifest（~/.cache/quick-watch/tasks/<fingerprint>/manifest.json）
+        # 转录：transcript.txt（本系统）→ 缓存 manifest（旧 quick-watch）
+        if not data["transcript"] and transcript_path.is_file():
+            try:
+                data["transcript"] = transcript_path.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                pass
         fingerprint = manifest.get("fingerprint") if isinstance(manifest, dict) else None
         if not data["transcript"] and fingerprint:
             cache_path = Path.home() / ".cache" / "quick-watch" / "tasks" / str(fingerprint) / "manifest.json"
@@ -722,19 +826,59 @@ class VideoTaskManager:
                 except (json.JSONDecodeError, OSError):
                     pass
 
+        # 兜底：本系统任务状态文件（task_root/<id>.json）——旧输出目录可能没有 manifest
+        if not data["source"]:
+            state_path = self._config.task_root / f"{task_dir.name}.json"
+            if state_path.is_file():
+                try:
+                    st = json.loads(state_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    st = {}
+                if isinstance(st, dict):
+                    data["source"] = str(st.get("source") or "")
+                    data["created_at"] = str(st.get("created_at") or "") or data["created_at"]
+                    data["transcript_source"] = st.get("transcript_source") or data.get("transcript_source")
+                    data["cost"] = st.get("cost") or data["cost"]
+                    if not data["transcript"]:
+                        data["transcript"] = str(st.get("transcript") or "")
+                    report = st.get("report")
+                    if isinstance(report, dict):
+                        data["title"] = str(report.get("title") or "") or data["title"]
+                        data["duration_seconds"] = report.get("duration_seconds") or data["duration_seconds"]
+                        data["keyframes"] = report.get("keyframes") or data["keyframes"]
+                    summary = st.get("summary")
+                    if isinstance(summary, dict):
+                        if not data["summary"]:
+                            data["summary"] = str(summary.get("summary") or "")
+                        if not data["keypoints"]:
+                            data["keypoints"] = list(summary.get("keypoints") or [])
+                        if summary.get("title_override"):
+                            data["title"] = str(summary["title_override"])
+                        data["visual_notes"] = list(summary.get("visual_notes") or [])
+
+        # created_at 兜底：目录 mtime（保证排序可见）
+        if not data["created_at"]:
+            try:
+                from datetime import datetime as _dt
+
+                data["created_at"] = _dt.fromtimestamp(task_dir.stat().st_mtime).isoformat(timespec="seconds")
+            except OSError:
+                pass
+
         # 关键帧文件实际路径映射
-        frames_dir = task_dir / "frames"
         resolved_frames = []
         for kf in data["keyframes"]:
             if not isinstance(kf, dict):
                 continue
             path = str(kf.get("path") or "")
             resolved_frames.append({**kf, "path": path})
-        if not resolved_frames and frames_dir.exists():
+        if not resolved_frames and frames_dir.is_dir():
             for f in sorted(frames_dir.glob("*.jpg")):
                 resolved_frames.append({"path": str(f), "timestamp_seconds": 0})
         data["keyframes"] = resolved_frames
 
+        # 来源分类：微信视频号 / B站 / 抖音 / YouTube / 本地 / 其他
+        data["source_kind"] = self._classify_source(str(data.get("source") or ""))
         return data
 
     # ── 启动 / 停止 ──

@@ -89,6 +89,8 @@ export interface LibraryTask {
   cost: Record<string, unknown> | null
   transcript_source?: string
   visual_notes?: string[]
+  /** 来源分类：weixin | bilibili | douyin | youtube | local | other */
+  source_kind?: string
 }
 
 /** 视频数据库：历史任务列表 */

@@ -17,8 +17,12 @@
       />
       <el-select v-model="sourceFilter" class="toolbar__select" aria-label="来源筛选">
         <el-option label="全部来源" value="all" />
-        <el-option label="视频链接" value="url" />
-        <el-option label="本地文件" value="file" />
+        <el-option label="微信视频号" value="weixin" />
+        <el-option label="B站" value="bilibili" />
+        <el-option label="抖音" value="douyin" />
+        <el-option label="YouTube" value="youtube" />
+        <el-option label="本地视频" value="local" />
+        <el-option label="其他" value="other" />
       </el-select>
       <el-select v-model="timeFilter" class="toolbar__select" aria-label="时间筛选">
         <el-option label="全部时间" value="all" />
@@ -69,7 +73,7 @@
             <el-icon aria-hidden="true"><VideoCamera /></el-icon>
           </div>
           <span v-if="task.duration_seconds" class="lib-card__duration">{{ formatDuration(task.duration_seconds) }}</span>
-          <span class="lib-card__source">{{ sourceLabel(task.source) }}</span>
+          <span class="lib-card__source">{{ sourceLabel(task.source, task.source_kind) }}</span>
         </div>
         <div class="lib-card__body">
           <h3 class="lib-card__title" :title="task.title" role="button" tabindex="0" @click="openTask(task)" @keyup.enter="openTask(task)">{{ task.title }}</h3>
@@ -159,7 +163,7 @@ const activeTask = ref<LibraryTask | null>(null)
 
 // 筛选状态
 const search = ref('')
-const sourceFilter = ref<'all' | 'url' | 'file'>('all')
+const sourceFilter = ref<'all' | 'weixin' | 'bilibili' | 'douyin' | 'youtube' | 'local' | 'other'>('all')
 const timeFilter = ref<'all' | 'today' | '7d' | '30d'>('all')
 const sortBy = ref<'newest' | 'oldest' | 'name'>('newest')
 const brokenCovers = ref<Set<string>>(new Set())
@@ -178,9 +182,11 @@ const filteredTasks = computed(() => {
       const haystack = [t.title, t.summary, t.source, t.task_id].join(' ').toLowerCase()
       if (!haystack.includes(keyword)) return false
     }
-    // 来源
-    if (sourceFilter.value === 'url' && !/^https?:\/\//i.test(t.source || '')) return false
-    if (sourceFilter.value === 'file' && /^https?:\/\//i.test(t.source || '')) return false
+    // 来源分类
+    if (sourceFilter.value !== 'all') {
+      const kind = t.source_kind || classifySource(t.source)
+      if (kind !== sourceFilter.value) return false
+    }
     // 时间
     if (timeFilter.value !== 'all') {
       const ts = parseTs(t.created_at)
@@ -292,19 +298,33 @@ function frameUrlFor(task: LibraryTask, index = 0): string {
   return libraryFrameUrl(task.task_id, name)
 }
 
-function sourceLabel(source: string): string {
+function classifySource(source: string): string {
   const s = (source || '').trim()
   const m = s.match(/^https?:\/\/([^/]+)/i)
-  if (!m) return '本地文件'
-  const host = m[1].replace(/^www\./i, '')
-  const known: Record<string, string> = {
-    'bilibili.com': 'B站',
-    'douyin.com': '抖音',
-    'youtube.com': 'YouTube',
-    'weixin.qq.com': '微信视频号',
-    'finder.video.qq.com': '微信视频号',
+  if (!m) return 'local'
+  const host = m[1].toLowerCase()
+  if (host.includes('weixin.qq.com') || host.includes('finder.video.qq.com') || host.startsWith('sph')) return 'weixin'
+  if (host.includes('bilibili.com') || host.includes('b23.tv')) return 'bilibili'
+  if (host.includes('douyin.com') || host.includes('iesdouyin.com')) return 'douyin'
+  if (host.includes('youtube.com') || host.includes('youtu.be')) return 'youtube'
+  return 'other'
+}
+
+function sourceKindLabel(kind: string): string {
+  const map: Record<string, string> = {
+    weixin: '微信视频号',
+    bilibili: 'B站',
+    douyin: '抖音',
+    youtube: 'YouTube',
+    local: '本地视频',
+    other: '其他',
   }
-  return known[host] ?? host
+  return map[kind] ?? kind
+}
+
+function sourceLabel(source: string, kind?: string): string {
+  const k = kind || classifySource(source)
+  return sourceKindLabel(k)
 }
 
 function formatDuration(seconds: number | null): string {

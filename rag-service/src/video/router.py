@@ -363,6 +363,15 @@ async def delete_task(
     return {"success": True, "data": None}
 
 
+def _library_task_path(manager: VideoTaskManager, task_dir: str, relative: str) -> Path:
+    """在旧库（library_root）与新输出目录（output_root）中定位任务文件。"""
+    for root in (manager._config.library_root, manager._config.output_root):
+        candidate = root / task_dir / relative
+        if candidate.exists():
+            return candidate
+    return root / task_dir / relative
+
+
 @router.get("/library/{task_dir}/frames/{name}")
 async def get_library_frame(
     task_dir: str,
@@ -374,7 +383,7 @@ async def get_library_frame(
     safe = _safe_frame_name(name)
     if not re.fullmatch(r"[A-Za-z0-9._-]+", task_dir):
         raise AppError("VIDEO_BAD_REQUEST", "非法的任务目录名", status_code=400)
-    frame_path = manager._config.library_root / task_dir / "frames" / safe
+    frame_path = _library_task_path(manager, task_dir, f"frames/{safe}")
     if not frame_path.exists():
         raise AppError("VIDEO_FRAME_NOT_FOUND", "帧图片不存在", status_code=404)
     return FileResponse(str(frame_path), media_type="image/jpeg")
@@ -389,7 +398,7 @@ async def get_library_report(
     manager = _manager(request)
     if not re.fullmatch(r"[A-Za-z0-9._-]+", task_dir):
         raise AppError("VIDEO_BAD_REQUEST", "非法的任务目录名", status_code=400)
-    report_path = manager._config.library_root / task_dir / "report.html"
+    report_path = _library_task_path(manager, task_dir, "report.html")
     if not report_path.exists():
         raise AppError("VIDEO_NO_REPORT", "该任务没有 HTML 报告", status_code=404)
     return FileResponse(str(report_path), media_type="text/html; charset=utf-8")
