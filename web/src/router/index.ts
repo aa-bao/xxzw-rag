@@ -16,7 +16,7 @@ const router = createRouter({
       path: '/',
       component: () => import('../layouts/AppLayout.vue'),
       meta: { requiresAuth: true },
-      redirect: '/kb',
+      redirect: '/chat',
       children: [
         {
           path: 'kb',
@@ -43,16 +43,22 @@ const router = createRouter({
           meta: { title: '视频数据库' },
         },
         {
-          path: 'video/settings',
-          name: 'video-settings',
-          component: () => import('../views/VideoSettingsView.vue'),
-          meta: { title: '系统设置' },
+          path: 'joom',
+          name: 'joom-pricing',
+          component: () => import('../views/JoomPricingView.vue'),
+          meta: { title: 'JOOM 定价器' },
         },
         {
           path: 'settings',
-          name: 'settings',
+          name: 'system-settings',
+          component: () => import('../views/SystemSettingsView.vue'),
+          meta: { title: '系统设置', roles: ['account_admin'] },
+        },
+        {
+          path: 'settings/rag',
+          name: 'kb-settings',
           component: () => import('../views/SettingsView.vue'),
-          meta: { title: '设置', roles: ['account_admin'] },
+          meta: { title: '知识库设置', roles: ['account_admin'] },
         },
         {
           path: 'settings/users',
@@ -61,10 +67,21 @@ const router = createRouter({
           meta: { title: '用户管理', roles: ['account_admin'] },
         },
         {
+          path: 'settings/video',
+          name: 'video-settings',
+          component: () => import('../views/VideoSettingsView.vue'),
+          meta: { title: 'agent设置' },
+        },
+        {
           path: 'settings/mapping-templates',
           name: 'mapping-templates',
           component: () => import('../views/MappingTemplatesView.vue'),
           meta: { title: '映射模板', roles: ['account_admin'] },
+        },
+        {
+          // 旧路径兼容：/video/settings → /settings/video
+          path: 'video/settings',
+          redirect: '/settings/video',
         },
         {
           path: 'kb/:id',
@@ -100,7 +117,7 @@ const router = createRouter({
         },
       ],
     },
-    { path: '/:pathMatch(.*)*', redirect: '/kb' },
+    { path: '/:pathMatch(.*)*', redirect: '/chat' },
   ],
 })
 
@@ -117,7 +134,7 @@ router.beforeEach(async (to) => {
     return { name: 'login', query: { redirect: to.fullPath } }
   }
   if (to.path === '/login' && auth.user) {
-    return { name: 'kb-list' }
+    return { name: 'chat' }
   }
   if (auth.user && !canAccess(auth.user.role, to.meta.roles)) {
     return { name: 'kb-list' }

@@ -69,6 +69,10 @@ class VideoSetting(Base):
     chat_base_url: Mapped[str] = mapped_column(String(500), nullable=False, server_default=text("''"))
     chat_model: Mapped[str] = mapped_column(String(200), nullable=False, server_default=text("''"))
     chat_api_key: Mapped[str] = mapped_column(String(1000), nullable=False, server_default=text("''"))
+    qa_model: Mapped[str] = mapped_column(String(200), nullable=False, server_default=text("''"))
+    # 问答模型可独立配置；空串 = 复用摘要模型/系统配置
+    qa_base_url: Mapped[str] = mapped_column(String(500), nullable=False, server_default=text("''"))
+    qa_api_key: Mapped[str] = mapped_column(String(1000), nullable=False, server_default=text("''"))
     frames: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("12"))
     updated_at: Mapped[datetime] = mapped_column(
         DateTime,

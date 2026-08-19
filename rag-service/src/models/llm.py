@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 
 from src.models.client import ModelError, _classify_error
+
+# OpenAI 兼容消息 content：纯文本或多模态 content 数组（图片/文本）。
+MessageContent = str | list[dict[str, Any]]
 
 
 class ChatClient:
@@ -25,10 +29,21 @@ class ChatClient:
     def _chat_model(self) -> str:
         return self._settings.model_relay.chat_model
 
-    async def complete(self, messages: list[dict[str, str]]) -> str:
+    async def complete(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+    ) -> str:
         """Return one non-streaming completion for internal model tasks."""
         url = f"{self._base_url}/chat/completions"
-        payload = {"model": self._chat_model, "messages": messages, "stream": False}
+        payload: dict[str, Any] = {
+            "model": self._chat_model,
+            "messages": messages,
+            "stream": False,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         headers = {"Authorization": f"Bearer {self._api_key}"}
 
         response = await self._client.post(url, json=payload, headers=headers)
@@ -42,9 +57,20 @@ class ChatClient:
             raise ModelError("MODEL_INVALID_RESPONSE", "missing completion content") from exc
         return content.strip() if isinstance(content, str) else ""
 
-    async def stream(self, messages: list[dict[str, str]]) -> AsyncIterator[str]:
+    async def stream(
+        self,
+        messages: list[dict[str, Any]],
+        *,
+        max_tokens: int | None = None,
+    ) -> AsyncIterator[str]:
         url = f"{self._base_url}/chat/completions"
-        payload = {"model": self._chat_model, "messages": messages, "stream": True}
+        payload: dict[str, Any] = {
+            "model": self._chat_model,
+            "messages": messages,
+            "stream": True,
+        }
+        if max_tokens is not None:
+            payload["max_tokens"] = max_tokens
         headers = {"Authorization": f"Bearer {self._api_key}"}
 
         response = await self._client.post(url, json=payload, headers=headers)
@@ -52,7 +78,6 @@ class ChatClient:
             code, retryable = _classify_error(response.status_code)
             raise ModelError(code, response.text or code, retryable=retryable)
 
-        content_emitted = False
         async for line in response.aiter_lines():
             line = line.strip()
             if not line or not line.startswith("data:"):
@@ -65,7 +90,6 @@ class ChatClient:
                 delta = event["choices"][0].get("delta", {})
                 content = delta.get("content", "")
                 if content:
-                    content_emitted = True
                     yield content
             except (json.JSONDecodeError, KeyError, IndexError):
                 continue

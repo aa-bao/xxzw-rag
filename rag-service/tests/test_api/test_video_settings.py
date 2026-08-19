@@ -97,8 +97,9 @@ async def test_video_settings_put_persists_and_restores(migrated_mysql_url: str)
                     "asr_model": "bigmodel-custom",
                     "asr_api_key": "volc-secret-key",
                     "chat_base_url": "https://ark.cn-beijing.volces.com/api/v3",
-                    "chat_model": "doubao-seed-2-1-turbo-260628",
+                    "chat_model": "doubao-seed-2-1-pro-260628",
                     "chat_api_key": "ark-test-key",
+                    "qa_model": "doubao-seed-2-1-turbo-260628",
                     "frames": 24,
                 },
                 cookies=cookies,
@@ -122,6 +123,7 @@ async def test_video_settings_put_persists_and_restores(migrated_mysql_url: str)
         assert stored.asr_model == "bigmodel-custom"
         assert stored.asr_api_key == "volc-secret-key"
         assert stored.chat_api_key == "ark-test-key"
+        assert stored.qa_model == "doubao-seed-2-1-turbo-260628"
         assert stored.frames == 24
     finally:
         await engine.dispose()

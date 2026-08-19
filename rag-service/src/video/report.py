@@ -317,7 +317,7 @@ body {
 }
 .kf { background: var(--paper); border: 1px solid var(--ink); overflow: hidden; }
 .kf-img { position: relative; aspect-ratio: 16 / 10; background: #e6e4de; border-bottom: 1px solid var(--ink); overflow: hidden; }
-.kf-img img { width: 100%; height: 100%; object-fit: cover; display: block; filter: grayscale(1) contrast(1.06); }
+.kf-img img { width: 100%; height: 100%; object-fit: cover; display: block; }
 .kf-ts {
   position: absolute; left: 0; top: 0;
   font-family: var(--mono); font-size: 11px; font-weight: 600;

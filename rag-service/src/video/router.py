@@ -11,18 +11,19 @@
   POST   /api/video/tasks/{id}/qa     基于转录问答（视频 Chat 配置，回退系统 model_relay）
   GET    /api/video/settings          读取视频 agent 设置（密钥只给 has_*）
   PUT    /api/video/settings          更新设置（热更新 + DB 持久化）
-  POST   /api/video/settings/test     测试连接（mode: asr | chat）
+  POST   /api/video/settings/test     测试连接（mode: asr | chat | chat_summary | chat_qa）
   GET    /api/video/env               运行环境信息
   GET    /api/video/library           历史任务库
 """
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, Request, UploadFile
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_permission, require_user
@@ -36,6 +37,8 @@ from src.video.summary import make_chat_client
 router = APIRouter(prefix="/api/video", tags=["video"])
 
 _MAX_UPLOAD_MB = 500
+# Agent 头像：随后端静态资源发布，不依赖本机任意图片目录
+AGENT_AVATAR_PATH = Path(__file__).resolve().parent.parent.parent / "static" / "nl-che.jpg"
 _ALLOWED_VIDEO_EXTS = {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv", ".mp3", ".m4a", ".aac", ".wav"}
 
 
@@ -62,12 +65,15 @@ class UpdateVideoSettingsRequest(BaseModel):
     chat_base_url: str | None = None
     chat_model: str | None = None
     chat_api_key: str | None = None
+    qa_model: str | None = None
+    qa_base_url: str | None = None
+    qa_api_key: str | None = None
     frames: int | None = Field(default=None, ge=0, le=48)
 
 
 class TestVideoSettingsRequest(BaseModel):
     model_config = {"extra": "forbid"}
-    mode: str = Field(pattern="^(asr|chat)$")
+    mode: str = Field(pattern="^(asr|chat|chat_summary|chat_qa)$")
     asr_model: str | None = None
     asr_api_key: str | None = None
     asr_app_id: str | None = None
@@ -75,6 +81,9 @@ class TestVideoSettingsRequest(BaseModel):
     chat_base_url: str | None = None
     chat_model: str | None = None
     chat_api_key: str | None = None
+    qa_model: str | None = None
+    qa_base_url: str | None = None
+    qa_api_key: str | None = None
 
 
 def _manager(request: Request) -> VideoTaskManager:
@@ -95,6 +104,91 @@ def _safe_frame_name(name: str) -> str:
     if not re.fullmatch(r"[A-Za-z0-9._-]+", name):
         raise AppError("VIDEO_BAD_REQUEST", "非法的帧文件名", status_code=400)
     return name
+
+
+# ── QA 上下文构建 ──
+
+def _qa_context_text(state: dict) -> str:
+    """把转录 + 摘要/画面说明拼成问答上下文。"""
+    transcript = str(state.get("transcript") or "")
+    summary = state.get("summary") or {}
+    if not isinstance(summary, dict):
+        summary = {}
+
+    parts: list[str] = []
+    if transcript.strip():
+        parts.append("【完整转录（带时间戳）】\n" + transcript[:_TRANSCRIPT_LIMIT_QA])
+    if summary.get("summary"):
+        parts.append("【摘要】\n" + str(summary["summary"]))
+    keypoints = summary.get("keypoints") or []
+    if keypoints:
+        parts.append("【要点】\n" + "\n".join(f"- {k}" for k in keypoints))
+    visual_notes = summary.get("visual_notes") or []
+    if visual_notes:
+        parts.append("【画面洞察】\n" + "\n".join(f"- {v}" for v in visual_notes))
+    captions = summary.get("keyframe_captions") or {}
+    if isinstance(captions, dict) and captions:
+        parts.append(
+            "【关键帧画面说明】\n"
+            + "\n".join(f"- [{ts}] {cap}" for ts, cap in captions.items())
+        )
+    return "\n\n".join(parts)
+
+
+def _qa_system_prompt() -> str:
+    return (
+        "你是视频解析助手。以下是某个视频的真实内容：完整转录（带 [MM:SS] 时间戳）、"
+        "摘要要点以及可用的画面说明。请只依据这些内容回答用户的问题："
+        "回答中引用时间戳 [MM:SS] 说明出处；区分「转录提到」和「画面中看到」；"
+        "内容中没有依据时明确说明，不要编造。"
+        "回答要简洁：普通问题控制在 300 字以内，需要分点时才使用短列表，不要展开无关内容。"
+    )
+
+
+def _build_qa_messages(
+    context: str,
+    history: list[dict],
+    question: str,
+    *,
+    with_images: bool = False,
+    keyframes: list[dict] | None = None,
+) -> list[dict]:
+    messages: list[dict] = [
+        {"role": "system", "content": _qa_system_prompt() + "\n\n" + context}
+    ]
+    # 历史对话（纯文本）
+    for item in history[-12:]:
+        role = "user" if item.get("role") == "user" else "assistant"
+        messages.append({"role": role, "content": str(item.get("content") or "")})
+    # 当前问题：必要时带上关键帧图片（多模态通道）
+    if with_images:
+        content: list[dict] = [{"type": "text", "text": question}]
+        for kf in (keyframes or [])[:4]:
+            path = str(kf.get("path") or "")
+            if not path:
+                continue
+            import base64
+            from pathlib import Path as _P
+
+            p = _P(path)
+            if not p.is_file():
+                continue
+            try:
+                b64 = base64.b64encode(p.read_bytes()).decode("ascii")
+            except OSError:
+                continue
+            mime = "image/jpeg" if p.suffix.lower() in {".jpg", ".jpeg"} else "image/png"
+            content.append({
+                "type": "image_url",
+                "image_url": {"url": f"data:{mime};base64,{b64}"},
+            })
+        messages.append({"role": "user", "content": content})
+    else:
+        messages.append({"role": "user", "content": question})
+    return messages
+
+
+_TRANSCRIPT_LIMIT_QA = 12000
 
 
 # ── 任务 ──
@@ -180,6 +274,17 @@ async def get_env(
     }
 
 
+@router.get("/agent-avatar")
+async def get_agent_avatar(
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> FileResponse:
+    """返回视频 Agent 头像（后端静态资源，不暴露本机图片路径）。"""
+    if not AGENT_AVATAR_PATH.is_file():
+        raise AppError("VIDEO_AVATAR_NOT_FOUND", "Agent 头像资源不存在", status_code=404)
+    return FileResponse(str(AGENT_AVATAR_PATH), media_type="image/jpeg")
+
+
 @router.get("/settings")
 async def get_video_settings(
     request: Request,
@@ -228,6 +333,18 @@ async def update_video_settings(
     if body.chat_api_key is not None and body.chat_api_key != "" and body.chat_api_key != settings.chat_api_key:
         settings.chat_api_key = body.chat_api_key
         changed = True
+    # qa_model：空串 = 跟随 chat_model（摘要模型）
+    if body.qa_model is not None and body.qa_model != settings.qa_model:
+        settings.qa_model = body.qa_model.strip()
+        changed = True
+    # qa_base_url：空串 = 复用摘要模型 Base URL
+    if body.qa_base_url is not None and body.qa_base_url != settings.qa_base_url:
+        settings.qa_base_url = body.qa_base_url.strip()
+        changed = True
+    # qa_api_key：空串 = 不更新（保留原值；留空即继续复用已配置 key）
+    if body.qa_api_key is not None and body.qa_api_key != "" and body.qa_api_key != settings.qa_api_key:
+        settings.qa_api_key = body.qa_api_key
+        changed = True
     if body.frames is not None and body.frames != settings.frames:
         settings.frames = body.frames
         changed = True
@@ -271,7 +388,7 @@ async def test_video_settings(
         ok, message = await asyncio.to_thread(video_asr.test_asr_connection, candidate, 30.0)
         return {"success": True, "data": {"ok": ok, "message": message}}
 
-    # chat 模式
+    # chat 模式：chat / chat_summary 测试摘要模型；chat_qa 测试问答模型
     candidate = current.copy()
     if body.chat_base_url is not None:
         candidate.chat_base_url = body.chat_base_url.strip()
@@ -279,8 +396,25 @@ async def test_video_settings(
         candidate.chat_model = body.chat_model.strip()
     if body.chat_api_key is not None and body.chat_api_key != "":
         candidate.chat_api_key = body.chat_api_key
+    if body.qa_base_url is not None:
+        candidate.qa_base_url = body.qa_base_url.strip()
+    if body.qa_api_key is not None and body.qa_api_key != "":
+        candidate.qa_api_key = body.qa_api_key
+
+    if body.mode == "chat_qa":
+        model = body.qa_model or current.qa_model or current.chat_model
+        if body.qa_model is not None:
+            candidate.qa_model = body.qa_model.strip()
+    else:
+        model = body.chat_model or current.chat_model
+
     try:
-        chat_client, owns = make_chat_client(candidate, app)
+        chat_client, owns = make_chat_client(
+            candidate,
+            app,
+            model=model,
+            qa=(body.mode == "chat_qa"),
+        )
         try:
             messages = [{"role": "user", "content": "hi"}]
             async for _ in chat_client.stream(messages):
@@ -345,6 +479,24 @@ async def get_task(
     return {"success": True, "data": state}
 
 
+@router.get("/tasks/{task_id}/events")
+async def get_task_events(
+    task_id: str,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+):
+    """SSE 事件流：实时推送视频解析流水线的每一步。"""
+    manager = _manager(request)
+    state = manager.get(task_id)
+    if state is None:
+        raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
+    return StreamingResponse(
+        manager.event_stream(task_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.delete("/tasks/{task_id}")
 async def delete_task(
     task_id: str,
@@ -360,6 +512,7 @@ async def delete_task(
         running.cancel()
     path = manager._state_path(task_id)
     path.unlink(missing_ok=True)
+    manager._close_event_stream(task_id)
     return {"success": True, "data": None}
 
 
@@ -416,18 +569,20 @@ async def get_frame(
     state = manager.get(task_id)
     if state is None:
         raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
+    frame_path: Path | None = None
     output_dir = state.get("output_dir")
-    if not output_dir:
-        raise AppError("VIDEO_NO_FRAMES", "任务尚未生成关键帧", status_code=404)
-    frame_path = Path(output_dir) / "frames" / safe
-    if not frame_path.exists():
+    if output_dir:
+        candidate = Path(output_dir) / "frames" / safe
+        if candidate.exists():
+            frame_path = candidate
+    if frame_path is None:
         for kf in state.get("keyframes") or []:
             p = Path(kf.get("path", ""))
             if p.name == safe and p.exists():
                 frame_path = p
                 break
-        else:
-            raise AppError("VIDEO_FRAME_NOT_FOUND", "帧图片不存在", status_code=404)
+    if frame_path is None:
+        raise AppError("VIDEO_FRAME_NOT_FOUND", "帧图片不存在", status_code=404)
     return FileResponse(str(frame_path), media_type="image/jpeg")
 
 
@@ -469,15 +624,21 @@ async def get_report_html(
     return FileResponse(str(html_path), media_type="text/html; charset=utf-8")
 
 
-@router.post("/tasks/{task_id}/qa")
-async def ask_question(
+@router.get("/tasks/{task_id}/qa/history")
+async def get_qa_history(
     task_id: str,
-    body: QaRequest,
     request: Request,
     principal: ProjectPrincipal = Depends(require_user),
 ) -> dict[str, object]:
-    """基于转录全文回答用户问题（视频 Chat 配置，回退系统 model_relay）。"""
+    """读取某任务的问答历史（多轮追问用）。"""
     manager = _manager(request)
+    state = manager.get(task_id)
+    if state is None:
+        raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
+    return {"success": True, "data": manager.get_qa_history(task_id)}
+
+
+def _require_complete_task(manager, task_id: str) -> dict:
     state = manager.get(task_id)
     if state is None:
         raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
@@ -486,26 +647,126 @@ async def ask_question(
     transcript = state.get("transcript") or ""
     if not transcript.strip():
         raise AppError("VIDEO_NO_TRANSCRIPT", "该任务没有可用转录", status_code=422)
+    return state
 
+
+@router.post("/tasks/{task_id}/qa")
+async def ask_question(
+    task_id: str,
+    body: QaRequest,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> dict[str, object]:
+    """基于视频真实内容（转录 + 摘要 + 画面说明）回答用户问题。"""
+    manager = _manager(request)
+    state = _require_complete_task(manager, task_id)
     settings = _settings(request)
-    chat_client, owns = make_chat_client(settings, request.app)
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "你是视频解析助手。以下是视频的完整转录文本（带时间戳）。"
-                "请基于转录内容回答用户问题，引用时间戳 [MM:SS] 说明出处；"
-                "转录中没有依据时明确说明。\n\n"
-                "【视频转录】\n" + transcript[:12000]
-            ),
-        },
-        {"role": "user", "content": body.question},
-    ]
+    history = manager.get_qa_history(task_id)
+    context = _qa_context_text(state)
+    keyframes = state.get("keyframes") or []
+    with_images = (settings.qa_configured or settings.chat_configured) and bool(keyframes)
+    messages = _build_qa_messages(
+        context,
+        history,
+        body.question,
+        with_images=with_images,
+        keyframes=keyframes,
+    )
+
+    chat_client, owns = make_chat_client(
+        settings,
+        request.app,
+        model=settings.qa_model or settings.chat_model,
+        qa=True,
+    )
     try:
-        answer = await chat_client.complete(messages)
+        try:
+            answer = await chat_client.complete(messages, max_tokens=1500)
+        except Exception:
+            if not with_images:
+                raise
+            # 多模态通道不可用时降级为纯转录/画面说明文本
+            messages_text = _build_qa_messages(
+                context, history, body.question, with_images=False
+            )
+            answer = await chat_client.complete(messages_text, max_tokens=1500)
     except Exception as exc:  # noqa: BLE001
         raise AppError("VIDEO_QA_FAILED", f"问答服务异常: {exc}", status_code=502) from exc
     finally:
         if owns:
             await chat_client._client.aclose()
+    manager.append_qa_message(task_id, "user", body.question)
+    manager.append_qa_message(task_id, "assistant", answer)
     return {"success": True, "data": {"answer": answer}}
+
+
+@router.post("/tasks/{task_id}/qa/stream")
+async def ask_question_stream(
+    task_id: str,
+    body: QaRequest,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+):
+    """SSE 流式问答：边生成边返回，并把多轮对话保存到任务状态。"""
+    manager = _manager(request)
+    state = _require_complete_task(manager, task_id)
+    settings = _settings(request)
+    history = manager.get_qa_history(task_id)
+    context = _qa_context_text(state)
+    keyframes = state.get("keyframes") or []
+    with_images = (settings.qa_configured or settings.chat_configured) and bool(keyframes)
+    messages = _build_qa_messages(
+        context,
+        history,
+        body.question,
+        with_images=with_images,
+        keyframes=keyframes,
+    )
+    manager.append_qa_message(task_id, "user", body.question)
+
+    chat_client, owns = make_chat_client(
+        settings,
+        request.app,
+        model=settings.qa_model or settings.chat_model,
+        qa=True,
+    )
+
+    async def sse_stream():
+        try:
+            yield VideoTaskManager._sse_event("start", {"question": body.question})
+            chunks: list[str] = []
+            try:
+                async for chunk in chat_client.stream(messages, max_tokens=1500):
+                    chunks.append(chunk)
+                    yield VideoTaskManager._sse_event("chunk", {"content": chunk})
+            except Exception:
+                if not with_images or chunks:
+                    raise
+                # 多模态通道不可用时降级为纯转录/画面说明文本
+                messages_text = _build_qa_messages(
+                    context, history, body.question, with_images=False
+                )
+                async for chunk in chat_client.stream(messages_text, max_tokens=1500):
+                    chunks.append(chunk)
+                    yield VideoTaskManager._sse_event("chunk", {"content": chunk})
+            answer = "".join(chunks).strip()
+            if not answer:
+                raise RuntimeError("模型未返回内容")
+            manager.append_qa_message(task_id, "assistant", answer)
+            yield VideoTaskManager._sse_event("done", {"answer": answer})
+        except Exception as exc:  # noqa: BLE001
+            yield VideoTaskManager._sse_event(
+                "error", {"message": f"问答服务异常: {exc}"}
+            )
+        finally:
+            if owns:
+                try:
+                    await chat_client._client.aclose()
+                except Exception:
+                    pass
+
+    return StreamingResponse(
+        sse_stream(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "Connection": "keep-alive"},
+    )

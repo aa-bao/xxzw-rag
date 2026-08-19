@@ -184,6 +184,9 @@ class VideoSettingRepository:
                 chat_base_url=str(values["chat_base_url"]),
                 chat_model=str(values["chat_model"]),
                 chat_api_key=str(values["chat_api_key"]),
+                qa_model=str(values.get("qa_model") or ""),
+                qa_base_url=str(values.get("qa_base_url") or ""),
+                qa_api_key=str(values.get("qa_api_key") or ""),
                 frames=int(values["frames"]),
             )
             self._session.add(setting)
@@ -196,6 +199,9 @@ class VideoSettingRepository:
             setting.chat_base_url = str(values["chat_base_url"])
             setting.chat_model = str(values["chat_model"])
             setting.chat_api_key = str(values["chat_api_key"])
+            setting.qa_model = str(values.get("qa_model") or "")
+            setting.qa_base_url = str(values.get("qa_base_url") or "")
+            setting.qa_api_key = str(values.get("qa_api_key") or "")
             setting.frames = int(values["frames"])
         await self._session.commit()
 

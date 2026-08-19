@@ -60,6 +60,10 @@ class MappingTemplateRequest(BaseModel):
     mapping: dict[str, Any]
 
 
+class MappingTemplateRenameRequest(BaseModel):
+    name: str
+
+
 class IngestRequest(BaseModel):
     doc_id: int
     mapping_version_id: int
@@ -399,6 +403,51 @@ async def preview_json(
     return {"success": True, "data": preview}
 
 
+async def _mapping_template_payload(db: AsyncSession, template: MappingTemplate) -> dict[str, object]:
+    versions = (
+        await db.execute(
+            select(MappingTemplateVersion)
+            .where(MappingTemplateVersion.mapping_template_id == template.id)
+            .order_by(MappingTemplateVersion.version)
+        )
+    ).scalars().all()
+    version_payload: list[dict[str, object]] = []
+    total_usage = 0
+    for version in versions:
+        usage = int(
+            await db.scalar(
+                select(func.count(DocumentMapping.id)).where(
+                    DocumentMapping.mapping_version_id == version.id
+                )
+            )
+            or 0
+        )
+        total_usage += usage
+        definition = MappingDefinition.model_validate(json.loads(version.mapping_json))
+        version_payload.append(
+            {
+                "id": version.id,
+                "version": version.version,
+                "mapping": _definition_payload(definition),
+                "fingerprint": version.structure_fingerprint,
+                "usage_count": usage,
+                "created_at": version.created_at.isoformat() if version.created_at else None,
+                "created_by": str(version.created_by_user_id),
+            }
+        )
+    return {
+        "id": template.id,
+        "name": template.name,
+        "source_format": template.source_format,
+        "current_version": versions[-1].version if versions else 0,
+        "fingerprint": versions[-1].structure_fingerprint if versions else "",
+        "usage_count": total_usage,
+        "created_at": template.created_at.isoformat() if template.created_at else None,
+        "updated_at": template.updated_at.isoformat() if template.updated_at else None,
+        "versions": version_payload,
+    }
+
+
 @router.get("/mapping-templates")
 async def list_mapping_templates(
     principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
@@ -414,53 +463,28 @@ async def list_mapping_templates(
             .order_by(MappingTemplate.updated_at.desc(), MappingTemplate.id.desc())
         )
     ).scalars().all()
-    payload: list[dict[str, object]] = []
-    for template in templates:
-        versions = (
-            await db.execute(
-                select(MappingTemplateVersion)
-                .where(MappingTemplateVersion.mapping_template_id == template.id)
-                .order_by(MappingTemplateVersion.version)
-            )
-        ).scalars().all()
-        version_payload: list[dict[str, object]] = []
-        total_usage = 0
-        for version in versions:
-            usage = int(
-                await db.scalar(
-                    select(func.count(DocumentMapping.id)).where(
-                        DocumentMapping.mapping_version_id == version.id
-                    )
-                )
-                or 0
-            )
-            total_usage += usage
-            definition = MappingDefinition.model_validate(json.loads(version.mapping_json))
-            version_payload.append(
-                {
-                    "id": version.id,
-                    "version": version.version,
-                    "mapping": _definition_payload(definition),
-                    "fingerprint": version.structure_fingerprint,
-                    "usage_count": usage,
-                    "created_at": version.created_at.isoformat() if version.created_at else None,
-                    "created_by": str(version.created_by_user_id),
-                }
-            )
-        payload.append(
-            {
-                "id": template.id,
-                "name": template.name,
-                "source_format": template.source_format,
-                "current_version": versions[-1].version if versions else 0,
-                "fingerprint": versions[-1].structure_fingerprint if versions else "",
-                "usage_count": total_usage,
-                "created_at": template.created_at.isoformat() if template.created_at else None,
-                "updated_at": template.updated_at.isoformat() if template.updated_at else None,
-                "versions": version_payload,
-            }
+    return {
+        "success": True,
+        "data": [await _mapping_template_payload(db, template) for template in templates],
+    }
+
+
+@router.get("/mapping-templates/{template_id}")
+async def get_mapping_template(
+    template_id: int,
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
+    db: AsyncSession = Depends(_session_factory),
+) -> dict[str, Any]:
+    template = await db.scalar(
+        select(MappingTemplate).where(
+            MappingTemplate.id == template_id,
+            MappingTemplate.created_by_user_id == principal.internal_user_id,
+            scope_condition(MappingTemplate, principal),
         )
-    return {"success": True, "data": payload}
+    )
+    if template is None:
+        raise AppError("MAPPING_TEMPLATE_NOT_FOUND", "映射模板不存在", status_code=404)
+    return {"success": True, "data": await _mapping_template_payload(db, template)}
 
 
 @router.post("/mapping-templates")
@@ -512,6 +536,84 @@ async def create_mapping_template_version(
             "fingerprint": version.structure_fingerprint or definition_fingerprint(definition),
         },
     }
+
+
+@router.put("/mapping-templates/{template_id}")
+async def rename_mapping_template(
+    template_id: int,
+    body: MappingTemplateRenameRequest,
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
+    db: AsyncSession = Depends(_session_factory),
+) -> dict[str, Any]:
+    template = await db.scalar(
+        select(MappingTemplate).where(
+            MappingTemplate.id == template_id,
+            MappingTemplate.created_by_user_id == principal.internal_user_id,
+            scope_condition(MappingTemplate, principal),
+        )
+    )
+    if template is None:
+        raise AppError("MAPPING_TEMPLATE_NOT_FOUND", "映射模板不存在", status_code=404)
+    name = body.name.strip()
+    if not name:
+        raise AppError("MAPPING_TEMPLATE_NAME_REQUIRED", "请输入映射模板名称")
+    template.name = name
+    await db.commit()
+    return {"success": True, "data": {"id": int(template.id), "name": template.name}}
+
+
+@router.delete("/mapping-templates/{template_id}")
+async def delete_mapping_template(
+    template_id: int,
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
+    db: AsyncSession = Depends(_session_factory),
+) -> dict[str, Any]:
+    template = await db.scalar(
+        select(MappingTemplate).where(
+            MappingTemplate.id == template_id,
+            MappingTemplate.created_by_user_id == principal.internal_user_id,
+            scope_condition(MappingTemplate, principal),
+        )
+    )
+    if template is None:
+        raise AppError("MAPPING_TEMPLATE_NOT_FOUND", "映射模板不存在", status_code=404)
+    used_count = int(
+        await db.scalar(
+            select(func.count(DocumentMapping.id))
+            .select_from(DocumentMapping)
+            .join(
+                MappingTemplateVersion,
+                MappingTemplateVersion.id == DocumentMapping.mapping_version_id,
+            )
+            .where(MappingTemplateVersion.mapping_template_id == template.id)
+        )
+        or 0
+    )
+    if used_count > 0:
+        raise AppError(
+            "MAPPING_TEMPLATE_IN_USE",
+            "该模板已被文档使用，不能删除；请保留模板或改用新模板后重试",
+            status_code=409,
+        )
+    try:
+        versions = (
+            await db.execute(
+                select(MappingTemplateVersion)
+                .where(MappingTemplateVersion.mapping_template_id == template.id)
+            )
+        ).scalars().all()
+        for version in versions:
+            await db.delete(version)
+        await db.delete(template)
+        await db.commit()
+    except Exception as exc:
+        await db.rollback()
+        raise AppError(
+            "MAPPING_TEMPLATE_DELETE_FAILED",
+            f"删除模板失败：{exc}",
+            status_code=400,
+        ) from exc
+    return {"success": True, "data": {"id": int(template.id)}}
 
 
 @router.post("/kb/{kb_id}/json/ingest")

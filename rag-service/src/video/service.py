@@ -92,6 +92,9 @@ class VideoTaskManager:
         self._app = app
         self._lock = threading.Lock()
         self._running: dict[str, asyncio.Task] = {}
+        # 事件流：按 task_id 保存内存事件缓冲 + SSE 订阅者队列
+        self._event_buffers: dict[str, list[dict[str, Any]]] = {}
+        self._subscribers: dict[str, set[asyncio.Queue]] = {}
 
     # ── 内部工具 ──
 
@@ -122,6 +125,106 @@ class VideoTaskManager:
             state["stage"] = stage
             self._save(state)
 
+    # ── 事件日志 / SSE ──
+
+    @staticmethod
+    def _sse_event(name: str, data: object) -> str:
+        import json as _json
+
+        return f"event: {name}\ndata: {_json.dumps(data, ensure_ascii=False)}\n\n"
+
+    def _emit_event(
+        self,
+        task_id: str,
+        stage: str,
+        title: str,
+        message: str,
+        *,
+        level: str = "info",
+        data: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        """记录一条流水线事件并推送给 SSE 订阅者。"""
+        state = self._load(task_id)
+        if state is None:
+            return None
+        events = state.get("events")
+        if not isinstance(events, list):
+            events = []
+        event = {
+            "seq": len(events) + 1,
+            "time": datetime.now(UTC).isoformat(timespec="seconds"),
+            "stage": stage,
+            "title": title,
+            "message": message,
+            "level": level,
+            "data": data or {},
+        }
+        events.append(event)
+        state["events"] = events
+        state["stage"] = stage
+        self._save(state)
+
+        buffer = self._event_buffers.setdefault(task_id, [])
+        buffer.append(event)
+        for queue in list(self._subscribers.get(task_id, set())):
+            queue.put_nowait(event)
+        return event
+
+    def _close_event_stream(self, task_id: str) -> None:
+        """通知该任务所有 SSE 订阅者结束（terminal 状态后调用）。"""
+        for queue in list(self._subscribers.get(task_id, set())):
+            queue.put_nowait(None)
+
+    async def event_stream(self, task_id: str):
+        """SSE 事件流：先回放历史事件，再实时推送直到任务结束。"""
+        queue: asyncio.Queue = asyncio.Queue()
+        self._subscribers.setdefault(task_id, set()).add(queue)
+        try:
+            state = self._load(task_id)
+            history = (state.get("events") or []) if state else []
+            for event in history:
+                yield self._sse_event("event", event)
+
+            if state and state.get("status") in (STATUS_COMPLETE, STATUS_FAILED):
+                yield self._sse_event("done", state)
+                return
+
+            while True:
+                try:
+                    item = await asyncio.wait_for(queue.get(), timeout=15)
+                except asyncio.TimeoutError:
+                    yield self._sse_event("heartbeat", {"ts": datetime.now(UTC).isoformat(timespec="seconds")})
+                    continue
+                if item is None:
+                    yield self._sse_event("done", self._load(task_id) or {})
+                    break
+                yield self._sse_event("event", item)
+        finally:
+            self._subscribers.get(task_id, set()).discard(queue)
+
+    # ── QA 历史 ──
+
+    def get_qa_history(self, task_id: str) -> list[dict[str, Any]]:
+        state = self._load(task_id)
+        history = (state.get("qa_history") or []) if state else []
+        return list(history) if isinstance(history, list) else []
+
+    def append_qa_message(self, task_id: str, role: str, content: str) -> None:
+        state = self._load(task_id)
+        if state is None:
+            return
+        history = state.get("qa_history")
+        if not isinstance(history, list):
+            history = []
+        history.append({
+            "role": role,
+            "content": content,
+            "time": datetime.now(UTC).isoformat(timespec="seconds"),
+        })
+        # 只保留最近 40 条，避免状态文件无限膨胀
+        state["qa_history"] = history[-40:]
+        self._save(state)
+
     # ── 任务提交 ──
 
     def submit(self, source: str, *, kind: str = "url", frames: int = 12) -> dict[str, Any]:
@@ -145,8 +248,11 @@ class VideoTaskManager:
             "summary": None,
             "pid": None,
             "frames_requested": frames,
+            "events": [],
+            "qa_history": [],
         }
         self._save(state)
+        self._event_buffers[task_id] = []
         return state
 
     # ── 后台执行 ──
@@ -172,10 +278,18 @@ class VideoTaskManager:
         state["status"] = STATUS_RUNNING
         state["stage"] = "starting"
         self._save(state)
+        self._emit_event(
+            task_id, "starting", "启动解析",
+            f"开始解析：{source}",
+            data={"kind": kind, "frames": frames},
+        )
 
         settings = self._get_settings()
         output_root = self._config.output_root / task_id
         output_root.mkdir(parents=True, exist_ok=True)
+        # 提前写入输出目录，运行中关键帧接口即可访问
+        state["output_dir"] = str(output_root)
+        self._save(state)
         started = time.perf_counter()
 
         try:
@@ -210,6 +324,17 @@ class VideoTaskManager:
         state["summary"] = self._final_summary
         state["transcript_source"] = self._final_transcript_source
         self._save(state)
+        self._emit_event(
+            task_id, "complete", "解析完成",
+            f"已生成转录 {len(self._final_transcript or '')} 字、"
+            f"{len(self._final_keyframes or [])} 张关键帧、摘要与 HTML 报告。",
+            level="success",
+            data={
+                "duration_seconds": (self._final_report or {}).get("duration_seconds"),
+                "cost": (self._final_report or {}).get("cost"),
+            },
+        )
+        self._close_event_stream(task_id)
 
         # 输出目录落一份自包含 manifest + transcript（视频库/外部工具可读）
         try:
@@ -280,7 +405,16 @@ class VideoTaskManager:
             # ── 获取阶段 ──
             if kind == "url":
                 self._update_stage(task_id, "downloading")
+                self._emit_event(
+                    task_id, "downloading", "获取视频",
+                    "正在解析视频源、尝试抓取平台字幕…",
+                    data={"source": source},
+                )
                 if acquire.is_weixin_sph_url(source):
+                    self._emit_event(
+                        task_id, "resolving", "解析微信视频号",
+                        "正在通过提取站解析视频号直链…",
+                    )
                     try:
                         resolved = await asyncio.to_thread(
                             acquire.resolve_weixin_source, source, 30.0
@@ -289,7 +423,18 @@ class VideoTaskManager:
                         download_referer = source
                         title = title or str(resolved.get("title") or "")
                         uploader = uploader or str(resolved.get("uploader") or "")
+                        self._emit_event(
+                            task_id, "resolved", "视频号解析成功",
+                            f"已解析直链，标题：{title or '未知'}",
+                            level="success",
+                            data={"title": title, "uploader": uploader},
+                        )
                     except Exception as exc:  # noqa: BLE001
+                        self._emit_event(
+                            task_id, "resolve_failed", "视频号解析失败",
+                            f"回退 yt-dlp 直连：{exc}",
+                            level="warning",
+                        )
                         # 视频号解析失败，回退 yt-dlp 直连
                         pass
 
@@ -316,7 +461,25 @@ class VideoTaskManager:
                     acquisition_source = "captions"
                     audio_path = None
                     self._update_stage(task_id, "captions_accepted")
+                    self._emit_event(
+                        task_id, "captions_accepted", "采用平台字幕",
+                        f"字幕覆盖率达到 {caption_ratio:.0%}，无需 ASR 转写。",
+                        level="success",
+                        data={"ratio": caption_ratio, "chars": len(caption_text)},
+                    )
                 else:
+                    if caption_text:
+                        self._emit_event(
+                            task_id, "captions_partial", "字幕覆盖不足",
+                            f"平台字幕覆盖率仅 {caption_ratio:.0%}，将用 ASR 填补空白。",
+                            level="warning",
+                            data={"ratio": caption_ratio, "gaps": caption_gaps},
+                        )
+                    else:
+                        self._emit_event(
+                            task_id, "captions_not_found", "未找到可用字幕",
+                            "将下载音频并走语音转写（ASR）。",
+                        )
                     audio_path, acquisition_source, _browser_cues, browser_cookies, browser_referer = (
                         await asyncio.to_thread(
                             acquire.acquire_url_audio,
@@ -335,6 +498,12 @@ class VideoTaskManager:
                     if not duration:
                         duration = await asyncio.to_thread(acquire.media_duration, audio_path)
                     self._update_stage(task_id, "audio_downloaded")
+                    self._emit_event(
+                        task_id, "audio_downloaded", "音频下载完成",
+                        f"来源：{acquisition_source}，时长 {duration:.1f} 秒。",
+                        level="success",
+                        data={"duration_seconds": duration, "source": acquisition_source},
+                    )
             else:
                 # 本地文件
                 local_path = Path(source).expanduser()
@@ -345,6 +514,12 @@ class VideoTaskManager:
                 await asyncio.to_thread(acquire.extract_local_audio, local_path, audio_path, 180.0)
                 acquisition_source = "local-file"
                 self._update_stage(task_id, "audio_extracted")
+                self._emit_event(
+                    task_id, "audio_extracted", "本地音频提取完成",
+                    f"已提取音频，时长 {duration:.1f} 秒。",
+                    level="success",
+                    data={"duration_seconds": duration},
+                )
 
             # ── 并行：ASR 转写 与 关键帧提取 ──
             frames_task: asyncio.Task | None = None
@@ -364,6 +539,10 @@ class VideoTaskManager:
 
             if audio_path is not None:
                 self._update_stage(task_id, "transcribing")
+                self._emit_event(
+                    task_id, "transcribing", "语音转写准备",
+                    "正在检测静音、规划 ASR 分片…",
+                )
                 silence_points = await asyncio.to_thread(
                     video_audio.detect_silence_points, audio_path, 120.0
                 )
@@ -381,6 +560,11 @@ class VideoTaskManager:
                             "ASR 凭证未配置：请在 agent设置页填写火山引擎语音技术 API Key "
                             "（或 App ID + Access Token），或配置 .env 的 VOLC_ASR_*"
                         )
+                    self._emit_event(
+                        task_id, "asr_planned", "ASR 分片规划完成",
+                        f"共 {len(plan)} 个分片，覆盖 {sum(e - s for _i, s, e in plan):.1f} 秒音频。",
+                        data={"chunks": len(plan), "ranges": [[s, e] for _i, s, e in plan]},
+                    )
                     # 切分所有分片
                     chunk_paths = await asyncio.to_thread(
                         video_audio.split_audio_plan,
@@ -396,7 +580,12 @@ class VideoTaskManager:
 
                     async def _one(idx: int, start: float) -> dict[str, Any]:
                         async with sem:
-                            return await asyncio.to_thread(
+                            self._emit_event(
+                                task_id, "asr_chunk_start", "ASR 转写分片",
+                                f"开始转写第 {idx + 1}/{len(plan)} 片（{start:.1f}s 起）…",
+                                data={"index": idx, "start": start},
+                            )
+                            result = await asyncio.to_thread(
                                 video_asr.transcribe_chunk,
                                 idx,
                                 start,
@@ -405,6 +594,23 @@ class VideoTaskManager:
                                 120.0,
                                 1,
                             )
+                            ok = result.get("error") is None
+                            text = str(result.get("text") or "")
+                            snippet = " ".join(text.strip().split())[:80]
+                            self._emit_event(
+                                task_id,
+                                "asr_chunk_done" if ok else "asr_chunk_failed",
+                                "ASR 分片完成" if ok else "ASR 分片失败",
+                                (
+                                    f"第 {idx + 1} 片完成，转写 {len(text)} 字"
+                                    + (f"：{snippet}…" if snippet else "") + "。"
+                                    if ok
+                                    else f"第 {idx + 1} 片失败：{result.get('error')}"
+                                ),
+                                level="success" if ok else "warning",
+                                data={"index": idx, "chars": len(text), "preview": snippet, "error": result.get("error")},
+                            )
+                            return result
 
                     results = list(await asyncio.gather(*(_one(idx, start) for idx, start, _e in plan)))
                     results = merge_resume_results([], results)
@@ -439,17 +645,42 @@ class VideoTaskManager:
                         if cues
                         else f"{settings.asr_model} ({len(plan)} VAD chunks, {_ASR_WORKERS} workers)"
                     )
+                    self._emit_event(
+                        task_id,
+                        "asr_completed" if not partial else "asr_partial",
+                        "语音转写完成" if not partial else "语音转写部分完成",
+                        (
+                            f"共转写 {len(transcript)} 字，失败分片 {len(failed_chunks)} 个。"
+                            if partial
+                            else f"共转写 {len(transcript)} 字。"
+                        ),
+                        level="warning" if partial else "success",
+                        data={"chars": len(transcript), "failed_chunks": failed_chunks},
+                    )
             elif caption_text:
                 transcript = caption_text
                 transcript_source = "captions"
 
             if frames_task is not None:
                 keyframes = await frames_task
+            if keyframes:
+                self._update_stage(task_id, "visual_understanding")
+                self._emit_event(
+                    task_id, "visual_understanding", "理解视频画面",
+                    f"正在用多模态模型读取 {len(keyframes)} 张关键帧，提取画面信息…",
+                    data={"frames": len(keyframes)},
+                )
             if not transcript.strip() and not no_speech_detected:
                 raise VideoTaskError("未生成任何转录内容")
 
             # ── 摘要（Chat 模型；失败不致命）──
             self._update_stage(task_id, "summarizing")
+            self._emit_event(
+                task_id, "summarizing", "生成摘要与要点",
+                f"正在基于 {len(transcript)} 字转录" +
+                (f"、{len(keyframes)} 张关键帧" if keyframes else "") +
+                "生成摘要…",
+            )
             summary: dict[str, Any] = {}
             try:
                 summary = await generate_summary(
@@ -457,13 +688,42 @@ class VideoTaskManager:
                     settings,
                     self._app,
                     title_hint=title or "",
+                    keyframes=keyframes,
                     output_path=output_root / "summary.json",
                 )
-            except Exception:  # noqa: BLE001
+                visual_count = len(summary.get("visual_notes") or [])
+                caption_count = len(summary.get("keyframe_captions") or {})
+                self._emit_event(
+                    task_id,
+                    "summary_completed",
+                    "摘要生成完成",
+                    f"摘要 {len(summary.get('summary') or '')} 字，"
+                    f"{len(summary.get('keypoints') or [])} 条要点"
+                    + (f"，画面洞察 {visual_count} 条" if visual_count else "")
+                    + (f"，关键帧说明 {caption_count} 张" if caption_count else "")
+                    + "。",
+                    level="success",
+                    data={
+                        "summary_chars": len(summary.get("summary") or ""),
+                        "keypoints": len(summary.get("keypoints") or []),
+                        "visual_notes": visual_count,
+                        "keyframe_captions": caption_count,
+                    },
+                )
+            except Exception as exc:  # noqa: BLE001
                 summary = {}
+                self._emit_event(
+                    task_id, "summary_failed", "摘要生成失败",
+                    f"已降级为无摘要报告：{exc}",
+                    level="warning",
+                )
 
             # ── HTML 报告（失败不致命）──
             self._update_stage(task_id, "rendering_report")
+            self._emit_event(
+                task_id, "rendering_report", "渲染 HTML 报告",
+                "正在生成自包含报告页面…",
+            )
             report_id = state.get("task_id") or task_id
             report = self._build_report(
                 task_id=report_id,
@@ -494,8 +754,20 @@ class VideoTaskManager:
                     keyframes=keyframes,
                     summary=summary,
                 )
+                report_path = output_root / "report.html"
+                self._emit_event(
+                    task_id, "report_completed", "HTML 报告已生成",
+                    f"报告大小 {report_path.stat().st_size / 1024:.0f} KB。",
+                    level="success",
+                    data={"path": str(report_path), "bytes": report_path.stat().st_size},
+                )
             except Exception as exc:  # noqa: BLE001 — 报告失败不影响结果
                 report.setdefault("report_warning", f"报告渲染失败: {exc}")
+                self._emit_event(
+                    task_id, "report_failed", "HTML 报告渲染失败",
+                    f"已保留转录/关键帧结果：{exc}",
+                    level="warning",
+                )
 
         # 结果交给 _run_pipeline 统一收尾
         self._final_report = report
@@ -519,6 +791,11 @@ class VideoTaskManager:
         video_for_frames: Path | None = None
         try:
             self._update_stage(task_id, "extracting_frames")
+            self._emit_event(
+                task_id, "frames_started", "提取关键帧",
+                f"目标 {frames} 帧，与语音转写并行执行…",
+                data={"frames_requested": frames},
+            )
             if acquire.is_url(source):
                 video_for_frames = await asyncio.to_thread(
                     acquire.download_url_video,
@@ -528,6 +805,11 @@ class VideoTaskManager:
                     referer=referer,
                     cookies=browser_cookies,
                     max_height=360,
+                )
+                self._emit_event(
+                    task_id, "frames_downloaded", "关键帧视频已就绪",
+                    "低码率视频下载完成，开始抽帧。",
+                    level="success",
                 )
             else:
                 video_for_frames = Path(source).expanduser()
@@ -561,8 +843,25 @@ class VideoTaskManager:
                 # path 指向输出目录副本
                 for kfi in kf:
                     kfi["path"] = str(frames_dest / Path(kfi["path"]).name)
+                # 提前写入状态，前端轮询/SSE 能实时看到关键帧缩略图
+                live_state = self._load(task_id)
+                if live_state is not None:
+                    live_state["keyframes"] = kf
+                    live_state["output_dir"] = live_state.get("output_dir") or str(self._config.output_root / task_id)
+                    self._save(live_state)
+            self._emit_event(
+                task_id, "frames_extracted", "关键帧提取完成",
+                f"共提取 {len(kf)} 张关键帧。",
+                level="success" if kf else "info",
+                data={"count": len(kf), "keyframes": kf},
+            )
         except Exception as exc:  # noqa: BLE001 — 帧提取失败不致命
             self._update_stage(task_id, "frame_extract_failed")
+            self._emit_event(
+                task_id, "frames_failed", "关键帧提取失败",
+                f"已降级为纯音频/无画面模式：{exc}",
+                level="warning",
+            )
         return kf
 
     @staticmethod
@@ -620,6 +919,13 @@ class VideoTaskManager:
         state["stage"] = "failed"
         state["error"] = message
         self._save(state)
+        self._emit_event(
+            task_id, "failed", "解析失败",
+            message or "未知错误",
+            level="error",
+            data={"error": message},
+        )
+        self._close_event_stream(task_id)
 
     # ── 查询 ──
 

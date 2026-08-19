@@ -9,10 +9,6 @@
       <div class="app-sidebar__glow app-sidebar__glow--b" aria-hidden="true"></div>
 
       <div class="app-sidebar__brand">
-        <div class="app-sidebar__company" aria-label="想象之外">
-          <span class="app-sidebar__company-badge">xxzw</span>
-          <span class="app-sidebar__company-name">想象之外</span>
-        </div>
         <span class="app-sidebar__logo">AI 工作台</span>
         <span class="app-sidebar__brand-name">AI Workbench</span>
       </div>
@@ -86,10 +82,15 @@ import {
   ArrowDown,
   ChatDotRound,
   Collection,
+  CopyDocument,
   Files,
   FolderOpened,
+  Monitor,
+  PriceTag,
+  Sell,
   Setting,
   SwitchButton,
+  Tools,
   User,
   VideoCamera,
   VideoPlay,
@@ -108,6 +109,8 @@ const userManagementHidden = embeddedUserManagementHidden()
 const groupOpenMap = ref<Record<string, boolean>>({
   rag: true,
   aiVideo: false,
+  joom: false,
+  system: false,
 })
 
 interface NavItem {
@@ -126,21 +129,26 @@ interface NavGroup {
 
 const navGroups = computed<NavGroup[]>(() => {
   const ragItems: NavItem[] = [
-    { name: 'kb-list', label: '知识库', icon: Files },
     { name: 'chat', label: '对话', icon: ChatDotRound },
+    { name: 'kb-list', label: '知识库', icon: Files },
   ]
-  if (auth.isAdmin) {
-    ragItems.push({ name: 'settings', label: '知识库设置', icon: Setting })
-    if (!userManagementHidden) {
-      ragItems.push({ name: 'users', label: '用户管理', icon: User })
-    }
-  }
   const videoItems: NavItem[] = [
     { name: 'video-analysis', label: '视频分析 agent', icon: VideoPlay },
-    { name: 'video-library', label: '视频数据库', icon: FolderOpened },
-    { name: 'video-settings', label: 'agent设置', icon: Setting },
+    { name: 'video-library', label: '视频库', icon: FolderOpened },
   ]
-  return [
+  const joomItems: NavItem[] = [
+    { name: 'joom-pricing', label: '定价计算器', icon: Sell },
+  ]
+  const systemItems: NavItem[] = [
+    { name: 'system-settings', label: '系统设置', icon: Monitor },
+    { name: 'kb-settings', label: '知识库设置', icon: Setting },
+    { name: 'video-settings', label: 'agent设置', icon: Tools },
+    { name: 'mapping-templates', label: '映射模板', icon: CopyDocument },
+  ]
+  if (!userManagementHidden) {
+    systemItems.push({ name: 'users', label: '用户管理', icon: User })
+  }
+  const groups: NavGroup[] = [
     {
       id: 'rag',
       label: 'RAG 知识库',
@@ -155,7 +163,24 @@ const navGroups = computed<NavGroup[]>(() => {
       open: groupOpenMap.value.aiVideo,
       items: videoItems,
     },
+    {
+      id: 'joom',
+      label: 'JOOM定价器',
+      icon: PriceTag,
+      open: groupOpenMap.value.joom,
+      items: joomItems,
+    },
   ]
+  if (auth.isAdmin) {
+    groups.push({
+      id: 'system',
+      label: '系统',
+      icon: Setting,
+      open: groupOpenMap.value.system,
+      items: systemItems,
+    })
+  }
+  return groups
 })
 
 function toggleGroup(group: NavGroup): void {
@@ -168,9 +193,16 @@ function isActive(name: string): boolean {
 
 /** 当前路由所属的一级模块自动展开 */
 const GROUP_BY_ROUTE: Record<string, string> = {
+  'kb-list': 'rag',
+  'chat': 'rag',
   'video-analysis': 'aiVideo',
   'video-library': 'aiVideo',
-  'video-settings': 'aiVideo',
+  'joom-pricing': 'joom',
+  'system-settings': 'system',
+  'kb-settings': 'system',
+  'video-settings': 'system',
+  'mapping-templates': 'system',
+  'users': 'system',
 }
 
 watch(

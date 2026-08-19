@@ -19,6 +19,26 @@ export interface VideoTask {
   summary: VideoSummary | null
   frames_requested?: number
   transcript_source?: string | null
+  events?: VideoPipelineEvent[]
+  qa_history?: VideoQaMessage[]
+}
+
+/** 流水线事件（SSE / 状态文件均使用） */
+export interface VideoPipelineEvent {
+  seq: number
+  time: string
+  stage: string
+  title: string
+  message: string
+  level: 'info' | 'success' | 'warning' | 'error'
+  data?: Record<string, unknown>
+}
+
+/** 视频问答消息 */
+export interface VideoQaMessage {
+  role: 'user' | 'assistant'
+  content: string
+  time?: string
 }
 
 /** 视频摘要（summary.json） */
@@ -27,6 +47,7 @@ export interface VideoSummary {
   summary?: string
   keypoints?: string[]
   visual_notes?: string[]
+  keyframe_captions?: Record<string, string>
   mode?: string
 }
 
@@ -136,6 +157,9 @@ export interface VideoSettings {
   chat_base_url: string
   chat_model: string
   has_chat_api_key: boolean
+  qa_model: string
+  qa_base_url: string
+  has_qa_api_key: boolean
   frames: number
 }
 
@@ -147,6 +171,9 @@ export interface VideoSettingsUpdate {
   chat_base_url?: string
   chat_model?: string
   chat_api_key?: string
+  qa_model?: string
+  qa_base_url?: string
+  qa_api_key?: string
   frames?: number
 }
 
@@ -156,7 +183,7 @@ export interface VideoSettingsTestResult {
 }
 
 export interface VideoSettingsTestRequest {
-  mode: 'asr' | 'chat'
+  mode: 'asr' | 'chat' | 'chat_summary' | 'chat_qa'
   asr_model?: string
   asr_api_key?: string
   asr_app_id?: string
@@ -164,6 +191,9 @@ export interface VideoSettingsTestRequest {
   chat_base_url?: string
   chat_model?: string
   chat_api_key?: string
+  qa_model?: string
+  qa_base_url?: string
+  qa_api_key?: string
 }
 
 /** 视频解析运行环境信息 */
@@ -200,8 +230,29 @@ export function reportUrl(taskId: string): string {
   return applicationUrl('/api/video/tasks/' + taskId + '/report.html')
 }
 
-/** 基于转录问答 */
+/** 视频 Agent 头像 URL（后端静态资源） */
+export function agentAvatarUrl(): string {
+  return applicationUrl('/api/video/agent-avatar')
+}
+
+/** 基于转录/画面问答 */
 export async function askQuestion(taskId: string, question: string): Promise<{ answer: string }> {
   const resp = await client.post<{ answer: string }>('/video/tasks/' + taskId + '/qa', { question })
   return resp.data
+}
+
+/** 读取某任务的问答历史 */
+export async function getQaHistory(taskId: string): Promise<VideoQaMessage[]> {
+  const resp = await client.get<VideoQaMessage[]>('/video/tasks/' + taskId + '/qa/history')
+  return resp.data
+}
+
+/** SSE 事件流 URL（EventSource 直接连接） */
+export function taskEventUrl(taskId: string): string {
+  return applicationUrl('/api/video/tasks/' + taskId + '/events')
+}
+
+/** SSE 流式问答：返回原始 Response，用 streamSse 消费 */
+export function askQuestionStream(taskId: string, question: string): Promise<Response> {
+  return client.queryRaw('/video/tasks/' + taskId + '/qa/stream', { question })
 }

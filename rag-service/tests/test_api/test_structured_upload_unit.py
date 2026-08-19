@@ -110,6 +110,9 @@ def test_confirm_flow_routes_are_registered() -> None:
         methods_by_path.setdefault(route.path, set()).update(route.methods)
     assert "GET" in methods_by_path["/api/mapping-templates"]
     assert "POST" in methods_by_path["/api/mapping-templates"]
+    assert "GET" in methods_by_path["/api/mapping-templates/{template_id}"]
+    assert "PUT" in methods_by_path["/api/mapping-templates/{template_id}"]
+    assert "DELETE" in methods_by_path["/api/mapping-templates/{template_id}"]
     assert "POST" in methods_by_path["/api/kb/{kb_id}/json/ingest"]
 
 

@@ -1,7 +1,8 @@
 <template>
   <div class="page">
     <header class="page__header">
-      <h1 class="page__title">设置</h1>
+      <h1 class="page__title">知识库设置</h1>
+      <span class="page__subtitle">配置 Chat 与 Embedding 模型，供知识库问答与向量化使用</span>
     </header>
 
     <!-- 模型配置（可视化表单） -->
@@ -123,34 +124,12 @@
         </el-button>
       </div>
     </section>
-
-    <!-- 系统状态 -->
-    <section class="card glass-surface" v-motion="cardMotion(1)" aria-label="系统状态">
-      <h2 class="card__title">系统状态</h2>
-      <div class="status-row">
-        <span class="status-row__label">后端服务</span>
-        <span class="status-pill" :class="health === 'online' ? 'status-pill--online' : 'status-pill--offline'">
-          <span
-            class="status-pill__dot"
-            :class="{ 'status-pill__dot--live': health === 'online' }"
-            v-motion="breathMotion"
-            aria-hidden="true"
-          ></span>
-          <span>{{ healthLabel }}</span>
-        </span>
-      </div>
-      <p class="card__hint status-hint">每 30 秒自动检测一次，亦可在下方手动刷新。</p>
-      <button type="button" class="refresh-btn btn-press" aria-label="重新检测后端状态" @click="checkHealth">
-        <el-icon class="refresh-btn__icon" aria-hidden="true"><Refresh /></el-icon>
-        <span>重新检测</span>
-      </button>
-    </section>
   </div>
 </template>
 
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from 'vue'
-import { ChatDotRound, CircleCheck, CircleClose, Connection, DataLine, Refresh } from '@element-plus/icons-vue'
+import { computed, onMounted, reactive, ref } from 'vue'
+import { ChatDotRound, CircleCheck, CircleClose, Connection, DataLine } from '@element-plus/icons-vue'
 import { ElMessage } from 'element-plus'
 import {
   getModelSettings,
@@ -158,12 +137,7 @@ import {
   updateModelSettings,
   type ModelSettings,
 } from '../api/settings'
-import { applicationUrl } from '../platform'
 
-type Health = 'unknown' | 'online' | 'offline'
-
-const health = ref<Health>('unknown')
-let healthTimer: number | undefined
 let loadToken = 0
 
 /* ── 模型表单 ── */
@@ -330,40 +304,8 @@ async function handleTestEmbed() {
   }
 }
 
-/* ── 健康检查 ── */
-async function checkHealth() {
-  try {
-    const resp = await fetch(applicationUrl('api/health/live'), { credentials: 'same-origin' })
-    if (resp.ok) {
-      const body = (await resp.json()) as { success?: boolean; data?: { status?: string } }
-      health.value = body.success && body.data?.status === 'live' ? 'online' : 'offline'
-    } else {
-      health.value = 'offline'
-    }
-  } catch {
-    health.value = 'offline'
-  }
-}
-
-const healthLabel = computed(() => {
-  switch (health.value) {
-    case 'online':
-      return '在线'
-    case 'offline':
-      return '离线'
-    default:
-      return '检测中'
-  }
-})
-
 onMounted(() => {
   loadModels()
-  checkHealth()
-  healthTimer = window.setInterval(checkHealth, 30000)
-})
-
-onUnmounted(() => {
-  if (healthTimer !== undefined) window.clearInterval(healthTimer)
 })
 
 /* ── 动效：弹簧错峰进入（规范 4.1） ── */
@@ -379,14 +321,6 @@ function cardMotion(i: number) {
   }
 }
 
-/* ── 在线状态点呼吸脉冲：v-motion 循环透明度（禁 CSS keyframes） ── */
-const breathMotion = {
-  initial: { opacity: 0.35 },
-  enter: {
-    opacity: 1,
-    transition: { type: 'tween', duration: 0.9, repeat: Infinity, repeatType: 'reverse', ease: 'easeInOut' },
-  },
-}
 </script>
 
 <style scoped>
@@ -409,6 +343,13 @@ const breathMotion = {
   letter-spacing: -0.02em;
   line-height: 1.2;
   color: var(--text-primary);
+}
+
+.page__subtitle {
+  display: block;
+  margin-top: 6px;
+  font-size: 13px;
+  color: var(--text-secondary);
 }
 
 /* ── 玻璃卡片 ── */
@@ -553,74 +494,6 @@ const breathMotion = {
 
 .card__btn-icon {
   margin-right: 6px;
-}
-
-/* ── 状态胶囊 ── */
-.status-row {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  padding: 4px 0 12px;
-}
-
-.status-row__label {
-  font-size: 13px;
-  color: var(--text-primary);
-}
-
-.status-pill {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 3px 10px;
-  border-radius: var(--radius-full);
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-}
-
-.status-pill--online {
-  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
-  color: var(--accent-green);
-}
-
-.status-pill--offline {
-  background: color-mix(in srgb, var(--accent-red) 12%, transparent);
-  color: var(--accent-red);
-}
-
-.status-pill__dot {
-  width: 6px;
-  height: 6px;
-  border-radius: var(--radius-full);
-  background: currentColor;
-}
-
-.status-hint {
-  margin-bottom: 12px;
-}
-
-.refresh-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 6px 0;
-  border: none;
-  background: transparent;
-  color: var(--accent-blue);
-  font-family: inherit;
-  font-size: 13px;
-  font-weight: 500;
-  cursor: pointer;
-}
-
-.refresh-btn:hover {
-  color: var(--accent-indigo);
-}
-
-.refresh-btn__icon {
-  font-size: 14px;
 }
 
 /* 响应式：窄屏降为单列 */

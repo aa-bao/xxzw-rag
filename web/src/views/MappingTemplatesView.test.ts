@@ -1,17 +1,22 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { mount, flushPromises, type VueWrapper } from '@vue/test-utils'
-import ElementPlus, { ElDialog } from 'element-plus'
+import ElementPlus, { ElDialog, ElMessageBox } from 'element-plus'
 import MappingTemplatesView from './MappingTemplatesView.vue'
 import type { MappingDefinition, MappingTemplateSummary } from '../types/structured'
 
 vi.mock('../api/structured', () => ({
   listMappingTemplates: vi.fn(),
   createMappingTemplateVersion: vi.fn(),
+  renameMappingTemplate: vi.fn(),
+  deleteMappingTemplate: vi.fn(),
 }))
 
-const { listMappingTemplates, createMappingTemplateVersion } = await import('../api/structured')
+const { listMappingTemplates, createMappingTemplateVersion, renameMappingTemplate, deleteMappingTemplate } =
+  await import('../api/structured')
 const listTemplatesMock = vi.mocked(listMappingTemplates)
 const createVersionMock = vi.mocked(createMappingTemplateVersion)
+const renameTemplateMock = vi.mocked(renameMappingTemplate)
+const deleteTemplateMock = vi.mocked(deleteMappingTemplate)
 
 const mapping: MappingDefinition = {
   source_format: 'json',
@@ -192,6 +197,58 @@ describe('MappingTemplatesView', () => {
 
     // 成功后关闭编辑对话框并刷新列表
     expect(wrapper.findComponent(ElDialog).props('modelValue')).toBe(false)
+    expect(listTemplatesMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('creates a new template from a JSON definition and reloads the list', async () => {
+    createVersionMock.mockResolvedValue({ template_id: 99, mapping_version_id: 1, version: 1, fingerprint: 'fp-new' })
+    const wrapper = mountView([])
+    await flushPromises()
+
+    await buttonsByText(wrapper, '新建模板')[0].trigger('click')
+    await flushPromises()
+
+    await wrapper.find('.el-dialog input').setValue('新模板')
+    await wrapper.find('.el-dialog textarea').setValue(JSON.stringify(mapping))
+    await buttonsByText(wrapper, '创建模板')[0].trigger('click')
+    await flushPromises()
+
+    expect(createVersionMock).toHaveBeenCalledWith(
+      expect.objectContaining({ template_id: null, name: '新模板', mapping: expect.any(Object) }),
+    )
+    expect(listTemplatesMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('renames a template and reloads the list', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await buttonsByText(wrapper, '重命名')[0].trigger('click')
+    await flushPromises()
+
+    const input = wrapper.find('.el-dialog input')
+    await input.setValue('新模板名称')
+    await buttonsByText(wrapper, '保存')[0].trigger('click')
+    await flushPromises()
+
+    expect(renameTemplateMock).toHaveBeenCalledWith(3, '新模板名称')
+    expect(listTemplatesMock).toHaveBeenCalledTimes(2)
+  })
+
+  it('deletes an unused template after confirmation and reloads the list', async () => {
+    vi.spyOn(ElMessageBox, 'confirm').mockResolvedValue('confirm' as never)
+    const unused = {
+      ...template,
+      usage_count: 0,
+      versions: template.versions.map((v) => ({ ...v, usage_count: 0 })),
+    }
+    const wrapper = mountView([unused])
+    await flushPromises()
+
+    await buttonsByText(wrapper, '删除')[0].trigger('click')
+    await flushPromises()
+
+    expect(deleteTemplateMock).toHaveBeenCalledWith(3)
     expect(listTemplatesMock).toHaveBeenCalledTimes(2)
   })
 })

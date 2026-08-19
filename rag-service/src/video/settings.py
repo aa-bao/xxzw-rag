@@ -5,6 +5,7 @@
   独立于系统模型配置；provider 固定 volcengine（火山引擎语音技术）。
 - Chat 可覆盖：chat_base_url / chat_model / chat_api_key 为空 = 复用系统
   model_relay；非空时用视频 agent 独立配置（默认预填豆包方舟）。
+- 问答模型可独立配置 qa_base_url / qa_model / qa_api_key；空字段回退到摘要配置。
 - 响应绝不回显密钥明文，只暴露 has_asr_api_key / has_asr_access_token /
   has_chat_api_key。
 """
@@ -25,7 +26,8 @@ ASR_MODEL_DEFAULT = os.environ.get("VOLC_ASR_MODEL", "bigmodel")
 ASR_RESOURCE_ID_DEFAULT = os.environ.get("VOLC_ASR_RESOURCE_ID", "volc.bigasr.auc_turbo")
 FRAMES_DEFAULT = 12
 CHAT_BASE_URL_DEFAULT = os.environ.get("VOLC_CHAT_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
-CHAT_MODEL_DEFAULT = os.environ.get("VOLC_CHAT_MODEL", "doubao-seed-2-1-turbo-260628")
+CHAT_MODEL_DEFAULT = os.environ.get("VOLC_CHAT_MODEL", "doubao-seed-2-1-pro-260628")
+QA_MODEL_DEFAULT = os.environ.get("VOLC_CHAT_QA_MODEL", "doubao-seed-2-1-turbo-260628")
 
 
 def _read_env_file(path: Path) -> dict[str, str]:
@@ -57,6 +59,9 @@ class VideoAgentSettings:
     chat_base_url: str = ""
     chat_model: str = ""
     chat_api_key: str = ""
+    qa_model: str = ""
+    qa_base_url: str = ""
+    qa_api_key: str = ""
     frames: int = FRAMES_DEFAULT
 
     # ── 工厂 ──
@@ -81,6 +86,9 @@ class VideoAgentSettings:
             chat_base_url=env.get("VOLC_CHAT_BASE_URL", CHAT_BASE_URL_DEFAULT).strip(),
             chat_model=env.get("VOLC_CHAT_MODEL", CHAT_MODEL_DEFAULT).strip(),
             chat_api_key=env.get("VOLC_CHAT_API_KEY", "").strip(),
+            qa_model=env.get("VOLC_CHAT_QA_MODEL", QA_MODEL_DEFAULT).strip(),
+            qa_base_url=env.get("VOLC_CHAT_QA_BASE_URL", "").strip(),
+            qa_api_key=env.get("VOLC_CHAT_QA_API_KEY", "").strip(),
             frames=int(env.get("VOLC_VIDEO_FRAMES", str(FRAMES_DEFAULT)) or FRAMES_DEFAULT),
         )
 
@@ -96,6 +104,9 @@ class VideoAgentSettings:
             chat_base_url=row.chat_base_url or "",
             chat_model=row.chat_model or "",
             chat_api_key=row.chat_api_key or "",
+            qa_model=row.qa_model or "",
+            qa_base_url=row.qa_base_url or "",
+            qa_api_key=row.qa_api_key or "",
             frames=row.frames,
         )
 
@@ -114,6 +125,9 @@ class VideoAgentSettings:
             "chat_base_url": self.chat_base_url,
             "chat_model": self.chat_model,
             "has_chat_api_key": bool(self.chat_api_key),
+            "qa_model": self.qa_model,
+            "qa_base_url": self.qa_base_url,
+            "has_qa_api_key": bool(self.qa_api_key),
             "frames": self.frames,
         }
 
@@ -128,6 +142,9 @@ class VideoAgentSettings:
             "chat_base_url": self.chat_base_url,
             "chat_model": self.chat_model,
             "chat_api_key": self.chat_api_key,
+            "qa_model": self.qa_model,
+            "qa_base_url": self.qa_base_url,
+            "qa_api_key": self.qa_api_key,
             "frames": self.frames,
         }
 
@@ -165,6 +182,14 @@ class VideoAgentSettings:
         """Chat 是否配置了独立通道（base_url + model + key 三者齐备）。"""
         return bool(self.chat_base_url.strip() and self.chat_model.strip() and self.chat_api_key.strip())
 
+    @property
+    def qa_configured(self) -> bool:
+        """问答模型是否可走独立通道；缺省字段回退到摘要模型配置。"""
+        base_url = self.qa_base_url.strip() or self.chat_base_url.strip()
+        model = self.qa_model.strip() or self.chat_model.strip()
+        api_key = self.qa_api_key.strip() or self.chat_api_key.strip()
+        return bool(base_url and model and api_key)
+
 
 class VideoAgentSettingsService:
     """设置的服务层：启动时从 DB 恢复、运行时保存到 DB。"""
@@ -195,6 +220,12 @@ class VideoAgentSettingsService:
                     restored.chat_model = defaults.chat_model
                 if not restored.chat_api_key:
                     restored.chat_api_key = defaults.chat_api_key
+                if not restored.qa_model:
+                    restored.qa_model = defaults.qa_model
+                if not restored.qa_base_url:
+                    restored.qa_base_url = defaults.qa_base_url
+                if not restored.qa_api_key:
+                    restored.qa_api_key = defaults.qa_api_key
                 if not restored.asr_api_key and not restored.asr_app_id:
                     restored.asr_api_key = defaults.asr_api_key
                     restored.asr_app_id = defaults.asr_app_id
@@ -207,6 +238,9 @@ class VideoAgentSettingsService:
                 self._settings.chat_base_url = restored.chat_base_url
                 self._settings.chat_model = restored.chat_model
                 self._settings.chat_api_key = restored.chat_api_key
+                self._settings.qa_model = restored.qa_model
+                self._settings.qa_base_url = restored.qa_base_url
+                self._settings.qa_api_key = restored.qa_api_key
                 self._settings.frames = restored.frames
         except Exception as exc:  # noqa: BLE001
             # DB 不可用（如离线启动）不阻断，保留 .env 默认值；记日志便于诊断

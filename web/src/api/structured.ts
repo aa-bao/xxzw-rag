@@ -19,6 +19,7 @@ import type {
  *   POST /api/kb/{kb_id}/json/profile
  *   POST /api/kb/{kb_id}/json/preview
  *   GET|POST /api/mapping-templates
+ *   GET|PUT|DELETE /api/mapping-templates/{template_id}
  *   POST /api/kb/{kb_id}/json/ingest
  *   GET  /api/docs/{doc_id}/mapping-errors
  */
@@ -57,10 +58,25 @@ export async function listMappingTemplates(): Promise<MappingTemplateSummary[]> 
   return (await api.get<MappingTemplateSummary[]>('/mapping-templates')).data
 }
 
+export async function getMappingTemplate(templateId: number): Promise<MappingTemplateSummary> {
+  return (await api.get<MappingTemplateSummary>(`/mapping-templates/${templateId}`)).data
+}
+
 export async function createMappingTemplateVersion(
   input: CreateMappingTemplateVersionInput,
 ): Promise<CreateMappingTemplateVersionResult> {
   return (await api.post<CreateMappingTemplateVersionResult>('/mapping-templates', input)).data
+}
+
+export async function renameMappingTemplate(
+  templateId: number,
+  name: string,
+): Promise<{ id: number; name: string }> {
+  return (await api.put<{ id: number; name: string }>(`/mapping-templates/${templateId}`, { name })).data
+}
+
+export async function deleteMappingTemplate(templateId: number): Promise<{ id: number }> {
+  return (await api.delete<{ id: number }>(`/mapping-templates/${templateId}`)).data
 }
 
 export async function startJsonIngest(kbId: number, input: StartJsonIngestInput): Promise<IngestResult> {

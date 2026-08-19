@@ -153,7 +153,7 @@ async function handleLogin() {
   loading.value = true
   try {
     await auth.login(form.username, form.password)
-    router.push('/kb')
+    router.push('/chat')
   } catch {
     error.value = '用户名或密码错误'
   } finally {
