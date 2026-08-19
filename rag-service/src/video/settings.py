@@ -189,9 +189,6 @@ class VideoAgentSettingsService:
                 restored = VideoAgentSettings.from_row(row)
                 # 空串字段（未保存过）回落 .env 默认，保证开箱即用
                 defaults = VideoAgentSettings.from_env()
-                import os as _os
-                with open(r"E:\dev\project\rag-database\rag-service\_restore_debug.txt", "a", encoding="utf-8") as _f:
-                    _f.write(f"row.asr_api_key={row.asr_api_key!r} env={_os.environ.get('VOLC_ASR_API_KEY')!r} defaults={defaults.asr_api_key!r}\n")
                 if not restored.chat_base_url:
                     restored.chat_base_url = defaults.chat_base_url
                 if not restored.chat_model:
