@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 import threading
@@ -621,6 +622,44 @@ class VideoTaskManager:
             if task is not None:
                 tasks.append(task)
         return tasks
+
+    def delete_library_task(self, task_dir: str) -> Path:
+        """删除历史视频库中的一个任务目录（不可恢复）。
+
+        路径安全：task_dir 仅允许 [A-Za-z0-9._-]，且解析后必须位于
+        library_root 之内（防路径穿越）。同时从 tasks.json 索引中移除条目。
+        """
+        import re as _re
+        import shutil as _shutil
+
+        if not _re.fullmatch(r"[A-Za-z0-9._-]+", task_dir):
+            raise VideoTaskError(f"非法的任务目录名: {task_dir!r}")
+        library_root = self._config.library_root.resolve()
+        target = (library_root / task_dir).resolve()
+        if not (str(target) == str(library_root) or str(target).startswith(str(library_root) + os.sep)):
+            raise VideoTaskError("任务目录越界，拒绝删除")
+        if not target.is_dir() or target.name == "latest":
+            raise VideoTaskError(f"任务目录不存在: {task_dir}")
+        _shutil.rmtree(target, ignore_errors=False)
+
+        # 从顶层 tasks.json 索引移除该任务条目
+        index_path = library_root / "tasks.json"
+        if index_path.is_file():
+            try:
+                index = json.loads(index_path.read_text(encoding="utf-8"))
+                if isinstance(index, list):
+                    kept = [
+                        item for item in index
+                        if not (isinstance(item, dict) and str(item.get("output_dir") or "").endswith(target.name))
+                    ]
+                    if len(kept) != len(index):
+                        index_path.write_text(
+                            json.dumps(kept, ensure_ascii=False, indent=2) + "\n",
+                            encoding="utf-8",
+                        )
+            except (json.JSONDecodeError, OSError):
+                pass
+        return target
 
     def _scan_library_task(self, task_dir: Path) -> dict[str, Any] | None:
         """读取单个历史任务目录，构造展示数据（兼容旧 quick-watch 交付物）。"""

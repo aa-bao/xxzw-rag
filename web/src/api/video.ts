@@ -97,6 +97,11 @@ export async function listLibrary(): Promise<LibraryTask[]> {
   return resp.data
 }
 
+/** 删除视频数据库中的单个历史任务（目录被永久删除，不可恢复） */
+export async function deleteLibraryTask(taskDir: string): Promise<void> {
+  await client.delete('/video/library/' + encodeURIComponent(taskDir))
+}
+
 /** 历史任务关键帧图片 URL */
 export function libraryFrameUrl(taskDir: string, name: string): string {
   return applicationUrl('/api/video/library/' + encodeURIComponent(taskDir) + '/frames/' + name)

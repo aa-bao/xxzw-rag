@@ -305,6 +305,23 @@ async def list_library(
     return {"success": True, "data": tasks}
 
 
+@router.delete("/library/{task_dir}")
+async def delete_library_task(
+    task_dir: str,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> dict[str, object]:
+    """删除历史视频库中的单个任务（目录会被永久删除，不可恢复）。"""
+    manager = _manager(request)
+    try:
+        removed = manager.delete_library_task(task_dir)
+    except AppError:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise AppError("VIDEO_LIBRARY_DELETE_FAILED", f"删除任务失败: {exc}", status_code=400) from exc
+    return {"success": True, "data": {"deleted": str(removed)}}
+
+
 @router.get("/tasks")
 async def list_tasks(
     request: Request,
