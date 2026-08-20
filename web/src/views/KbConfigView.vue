@@ -53,8 +53,49 @@
       </el-form>
     </section>
 
+    <!-- 默认导入模板 -->
+    <section v-if="kb" class="card glass-surface" v-motion="cardMotion(1)" aria-label="默认导入模板">
+      <div class="card__head">
+        <h2 class="card__title">默认导入模板</h2>
+        <span class="card__tag">结构化数据</span>
+      </div>
+      <p class="default-mapping__desc">
+        为 JSON / JSONL 上传设置默认映射模板。设置后，普通用户在「模板导入」中会自动选中该模板。
+      </p>
+      <el-form label-position="top" @submit.prevent>
+        <el-form-item label="映射模板版本">
+          <el-select
+            v-model="defaultVersionId"
+            class="default-mapping__select"
+            placeholder="请选择默认模板版本"
+            clearable
+            filterable
+            aria-label="默认映射模板版本"
+          >
+            <el-option
+              v-for="opt in templateOptions"
+              :key="opt.versionId"
+              :label="opt.label"
+              :value="opt.versionId"
+            />
+          </el-select>
+        </el-form-item>
+        <div class="form-actions">
+          <el-button
+            type="primary"
+            class="btn-press"
+            :loading="savingDefault"
+            :disabled="defaultVersionId === kb.default_mapping_version_id"
+            @click="saveDefaultMapping"
+          >
+            保存默认模板
+          </el-button>
+        </div>
+      </el-form>
+    </section>
+
     <!-- 嵌入配置（只读） -->
-    <section v-if="kb" class="card glass-surface" v-motion="cardMotion(1)" aria-label="嵌入配置">
+    <section v-if="kb" class="card glass-surface" v-motion="cardMotion(2)" aria-label="嵌入配置">
       <div class="card__head">
         <h2 class="card__title">嵌入配置</h2>
         <span class="card__tag">只读</span>
@@ -115,12 +156,14 @@
 </template>
 
 <script setup lang="ts">
-import { onMounted, reactive, ref } from 'vue'
+import { computed, onMounted, reactive, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { Delete, Picture, Upload, Warning, WarningFilled } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { deleteKb, getKb, updateKb, uploadKbCover } from '../api/kb'
+import { deleteKb, getKb, setDefaultMappingVersion, updateKb, uploadKbCover } from '../api/kb'
 import type { KbInfo } from '../api/kb'
+import { listMappingTemplates } from '../api/structured'
+import type { MappingTemplateSummary } from '../types/structured'
 
 const route = useRoute()
 const router = useRouter()
@@ -134,13 +177,29 @@ const saving = ref(false)
 const deleting = ref(false)
 
 const form = reactive({ name: '', description: '' })
+const templates = ref<MappingTemplateSummary[]>([])
+const defaultVersionId = ref<number | null>(null)
+const savingDefault = ref(false)
+
+const templateOptions = computed(() =>
+  templates.value.flatMap((t) =>
+    t.versions.map((v) => ({
+      versionId: v.id,
+      label: `${t.name} v${v.version}（${t.source_format}）`,
+    })),
+  ),
+)
+
 async function load() {
   loading.value = true
   loadError.value = false
   try {
-    kb.value = await getKb(kbId)
-    form.name = kb.value.name
-    form.description = kb.value.description ?? ''
+    const [info, templateList] = await Promise.all([getKb(kbId), listMappingTemplates()])
+    kb.value = info
+    form.name = info.name
+    form.description = info.description ?? ''
+    templates.value = templateList
+    defaultVersionId.value = info.default_mapping_version_id
   } catch {
     loadError.value = true
   } finally {
@@ -182,6 +241,20 @@ async function saveInfo() {
     ElMessage.error('保存失败，请重试')
   } finally {
     saving.value = false
+  }
+}
+
+async function saveDefaultMapping() {
+  if (!kb.value) return
+  savingDefault.value = true
+  try {
+    kb.value = await setDefaultMappingVersion(kbId, defaultVersionId.value)
+    ElMessage.success(defaultVersionId.value ? '默认模板已更新' : '已清除默认模板')
+  } catch (err) {
+    const message = (err as { error?: { message?: string } })?.error?.message
+    ElMessage.error(message || '保存默认模板失败')
+  } finally {
+    savingDefault.value = false
   }
 }
 
@@ -361,6 +434,18 @@ function cardMotion(i: number) {
 .form-actions {
   display: flex;
   justify-content: flex-end;
+}
+
+.default-mapping__desc {
+  margin: 0 0 16px;
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text-secondary);
+}
+
+.default-mapping__select {
+  width: 100%;
+  max-width: 480px;
 }
 
 /* ── 封面上传 ── */

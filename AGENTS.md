@@ -2,6 +2,18 @@
 
 RAG 知识库系统。前端位于 `web/`，后端服务位于 `rag-service/`，使用 Docker 编排。
 
+## 启动项目
+
+**先看 SOP，不要绕路**：`docs/项目启动SOP.md`
+
+一键启动（幂等，自动 MySQL + 迁移 + 后端 + 前端）：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-project.ps1
+```
+
+启动后：前端 `http://localhost:5173`，后端 `http://127.0.0.1:8000`。
+
 ## 识图能力
 
 底层模型不具备原生识图能力。遇到图片时，**不要用 Read 工具**，改用 ModLens 视觉桥（Google Gemini）：

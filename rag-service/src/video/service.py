@@ -413,7 +413,7 @@ class VideoTaskManager:
                 if acquire.is_weixin_sph_url(source):
                     self._emit_event(
                         task_id, "resolving", "解析微信视频号",
-                        "正在通过提取站解析视频号直链…",
+                        "正在通过 wx_channels_download API 解析视频号直链…",
                     )
                     try:
                         resolved = await asyncio.to_thread(
@@ -432,16 +432,41 @@ class VideoTaskManager:
                     except Exception as exc:  # noqa: BLE001
                         self._emit_event(
                             task_id, "resolve_failed", "视频号解析失败",
-                            f"回退 yt-dlp 直连：{exc}",
-                            level="warning",
+                            f"请确认已启动 wx_channels_download（未配 cookie 时需保持视频号页面打开）：{exc}",
+                            level="error",
                         )
-                        # 视频号解析失败，回退 yt-dlp 直连
-                        pass
+                        # 视频号没有公开直链，yt-dlp 无法兜底，直接给出可操作错误。
+                        raise acquire.AcquisitionError(
+                            "视频号解析失败：请先启动 wx_channels_download"
+                            "（默认 API http://127.0.0.1:2022）。"
+                            "若未配置 cloudflare.sphCookie，请保持一个视频号页面打开；"
+                            "配置元宝 cookie 后可免手动打开每个用户链接。"
+                            "或在环境中配置 WX_CHANNELS_API_BASE_URL 指向其 API 服务。"
+                            f"原始错误：{exc}"
+                        ) from exc
+                elif acquire.is_douyin_url(source):
+                    # 抖音精选页 /jingxuan?modal_id=... 不是 yt-dlp 支持的 URL；
+                    # 提取 modal_id 并归一为标准视频页，否则会报 Unsupported URL。
+                    normalized = acquire.normalize_douyin_url(direct_source)
+                    if normalized != direct_source:
+                        download_referer = source
+                        direct_source = normalized
+                        self._emit_event(
+                            task_id, "normalized", "抖音链接归一",
+                            f"已将分享页链接归一为 yt-dlp 支持格式：{direct_source}",
+                            level="info",
+                            data={"source": source, "normalized": direct_source},
+                        )
 
                 caption: dict[str, Any] = {}
                 try:
                     caption = await asyncio.to_thread(
-                        acquire.try_url_captions, direct_source, work / "captions", 45.0
+                        acquire.try_url_captions,
+                        direct_source,
+                        work / "captions",
+                        45.0,
+                        no_proxy=acquire.is_weixin_sph_url(source),
+                        cookies=self._config.cookie_file,
                     )
                 except Exception as exc:  # noqa: BLE001
                     caption = {"transcript": "", "cues": [], "duration": 0.0, "error": str(exc)}
@@ -493,6 +518,7 @@ class VideoTaskManager:
                                 if acquire.is_weixin_sph_url(source)
                                 else None
                             ),
+                            no_proxy=acquire.is_weixin_sph_url(source),
                         )
                     )
                     if not duration:
@@ -803,8 +829,9 @@ class VideoTaskManager:
                     Path(tempfile.gettempdir()) / f"rag-video-frames-{task_id}",
                     300.0,
                     referer=referer,
-                    cookies=browser_cookies,
+                    cookies=browser_cookies or self._config.cookie_file,
                     max_height=360,
+                    no_proxy=acquire.is_weixin_sph_url(source),
                 )
                 self._emit_event(
                     task_id, "frames_downloaded", "关键帧视频已就绪",

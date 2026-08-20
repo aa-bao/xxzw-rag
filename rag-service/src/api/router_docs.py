@@ -336,7 +336,7 @@ async def list_doc_chunks(
 ) -> dict[str, object]:
     """文档 chunk 列表（分页，读向量库）。"""
     await _get_kb_for_docs(db, kb_id, principal)
-    await _get_doc(db, kb_id, doc_id, principal)
+    doc = await _get_doc(db, kb_id, doc_id, principal)
 
     kb = await _get_kb_for_docs(db, kb_id, principal)
     collection_name = kb.active_collection or f"kb_{kb_id}_v1"
@@ -353,7 +353,11 @@ async def list_doc_chunks(
     if keyword:
         kw = keyword.lower()
         items = [it for it in items if kw in (it["content"] or "").lower()]
-    return {"success": True, "data": {"total": len(items), "items": items}}
+        # 关键词搜索沿用页内过滤计数；无关键词时用文档真实 chunk 数作为分页 total
+        total = len(items)
+    else:
+        total = doc.chunk_count
+    return {"success": True, "data": {"total": total, "items": items}}
 
 
 @router.put("/kb/{kb_id}/docs/{doc_id}/chunks/{chunk_id}")

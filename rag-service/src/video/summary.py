@@ -27,8 +27,9 @@ logger = logging.getLogger(__name__)
 
 # 转录输入截断字符数（避免超长上下文）
 _TRANSCRIPT_LIMIT = 12000
-# 一次最多送入视觉模型的关键帧数量（超过时均匀抽样）
-_MAX_VISUAL_FRAMES = 8
+# 一次最多送入视觉模型的关键帧数量（覆盖前端可选上限 24 帧，
+# 避免 12/24 帧时只有抽样帧有画面描述）
+_MAX_VISUAL_FRAMES = 24
 
 _SUMMARY_SYSTEM_PROMPT = (
     "你是视频解析助手。下面是视频的完整转录文本（带 [MM:SS] 时间戳）。"
@@ -110,6 +111,35 @@ def _extract_json(text: str) -> dict[str, Any] | None:
         return None
 
 
+def _format_timestamp(seconds: float) -> str:
+    """与前端一致的时间戳格式：MM:SS 或 H:MM:SS。"""
+    total = int(seconds)
+    hours = total // 3600
+    minutes = (total % 3600) // 60
+    secs = total % 60
+    if hours:
+        return f"{hours}:{minutes:02d}:{secs:02d}"
+    return f"{minutes:02d}:{secs:02d}"
+
+
+def _parse_timestamp(value: str) -> float | None:
+    """解析 MM:SS / H:MM:SS / 秒数，失败返回 None。"""
+    text = str(value).strip()
+    if not text:
+        return None
+    try:
+        if text.isdigit():
+            return float(text)
+        parts = text.split(":")
+        if len(parts) == 2:
+            return int(parts[0]) * 60 + int(parts[1])
+        if len(parts) == 3:
+            return int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+    except ValueError:
+        return None
+    return None
+
+
 def _image_to_data_url(path: str | Path) -> str | None:
     p = Path(path)
     if not p.is_file():
@@ -143,6 +173,11 @@ def _build_visual_messages(
     title_hint: str = "",
 ) -> list[dict[str, Any]]:
     """构造多模态 messages：转录 + 抽样关键帧图片。"""
+    sampled = _sample_keyframes(keyframes)
+    timestamps = "、".join(
+        _format_timestamp(float(kf.get("timestamp_seconds") or 0))
+        for kf in sampled
+    )
     content: list[dict[str, Any]] = [
         {
             "type": "text",
@@ -153,10 +188,11 @@ def _build_visual_messages(
                 if title_hint
                 else "\n"
             )
-            + "\n以下是关键帧图片，按顺序与 keyframe_captions 键对应：",
+            + f"\n以下是 {len(sampled)} 张关键帧图片，按顺序与 keyframe_captions 键对应。\n"
+            + f"关键帧时间戳顺序：{timestamps}",
         }
     ]
-    for kf in _sample_keyframes(keyframes):
+    for kf in sampled:
         url = _image_to_data_url(str(kf.get("path") or ""))
         if url:
             content.append({
@@ -194,8 +230,12 @@ def _normalize_summary(
         captions: dict[str, str] = {}
         for ts, cap in raw_captions.items():
             cap_text = str(cap).strip()
-            if cap_text:
-                captions[str(ts).strip()] = cap_text
+            if not cap_text:
+                continue
+            # 模型可能返回 "0:06" 而前端查 "00:06"，统一归一化时间戳键。
+            seconds = _parse_timestamp(str(ts))
+            key = _format_timestamp(seconds) if seconds is not None else str(ts).strip()
+            captions[key] = cap_text
         summary["keyframe_captions"] = captions
     # 没有返回画面说明时，为已有关键帧补空占位（保持结构稳定）
     if keyframes and not summary["keyframe_captions"]:

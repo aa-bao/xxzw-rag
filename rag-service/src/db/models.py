@@ -177,6 +177,10 @@ class KnowledgeBase(Base):
     )
     top_k: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("5"))
     enabled: Mapped[bool] = mapped_column(nullable=False, server_default=text("1"))
+    default_mapping_version_id: Mapped[int | None] = mapped_column(
+        BigInteger,
+        ForeignKey("rag_mapping_template_version.id", ondelete="SET NULL"),
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False, server_default=CURRENT_TIMESTAMP)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, server_default=CURRENT_TIMESTAMP, server_onupdate=CURRENT_TIMESTAMP

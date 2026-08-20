@@ -5,6 +5,7 @@ import KbDocsView from '../../views/KbDocsView.vue'
 import JsonMappingWizard from './JsonMappingWizard.vue'
 import UploadDialog from '../UploadDialog.vue'
 import UploadTypeDialog from '../UploadTypeDialog.vue'
+import TemplateImportDialog from '../TemplateImportDialog.vue'
 
 vi.mock('../../api/structured', () => ({
   profileJson: vi.fn(),
@@ -30,6 +31,16 @@ vi.mock('../../api/docs', () => ({
 
 vi.mock('../../api/retrieval', () => ({
   listChunks: vi.fn().mockResolvedValue({ items: [], total: 0 }),
+}))
+
+vi.mock('../../api/kb', () => ({
+  getKb: vi.fn().mockResolvedValue({ id: 5, name: 'Test KB', default_mapping_version_id: null }),
+  setDefaultMappingVersion: vi.fn(),
+  listKbs: vi.fn().mockResolvedValue([]),
+  createKb: vi.fn(),
+  updateKb: vi.fn(),
+  deleteKb: vi.fn(),
+  uploadKbCover: vi.fn(),
 }))
 
 vi.mock('vue-router', () => ({
@@ -158,12 +169,25 @@ describe('KbDocsView upload type routing', () => {
     expect(wrapper.findComponent(JsonMappingWizard).exists()).toBe(false)
   })
 
-  it('opens JsonMappingWizard after choosing structured data', async () => {
+  it('opens TemplateImportDialog after choosing template import', async () => {
+    const wrapper = mount(KbDocsView, globalMount)
+    await flushPromises()
+
+    wrapper.findComponent(UploadTypeDialog).vm.$emit('select', 'template')
+    await flushPromises()
+
+    const dialog = wrapper.findComponent(TemplateImportDialog)
+    expect(dialog.exists()).toBe(true)
+    expect(dialog.props('visible')).toBe(true)
+    expect(wrapper.findComponent(JsonMappingWizard).exists()).toBe(false)
+  })
+
+  it('opens JsonMappingWizard after choosing advanced import', async () => {
     const wrapper = mount(KbDocsView, globalMount)
     await flushPromises()
 
     const typeDialog = wrapper.findComponent(UploadTypeDialog)
-    typeDialog.vm.$emit('select', 'structured')
+    typeDialog.vm.$emit('select', 'advanced')
     await flushPromises()
 
     const wizard = wrapper.findComponent(JsonMappingWizard)

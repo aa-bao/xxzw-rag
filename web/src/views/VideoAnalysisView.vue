@@ -110,7 +110,12 @@
           <el-progress :percentage="progressPercent" :indeterminate="true" :duration="2" :stroke-width="10" />
         </div>
         <div v-if="active.status === 'failed'" class="console-error">
-          <el-alert type="error" :closable="false" show-icon>
+          <el-alert v-if="cookieError" type="warning" :closable="false" show-icon>
+            <template #title>平台 Cookie 已失效</template>
+            <p class="cookie-error__hint">当前解析需要平台 Cookie，请提醒管理员更新 <code>rag-service/cookies.txt</code> 后重试。</p>
+            <p class="cookie-error__detail">{{ cookieError }}</p>
+          </el-alert>
+          <el-alert v-else type="error" :closable="false" show-icon>
             <template #title>解析失败</template>
             <p>{{ active.error || '未知错误' }}</p>
           </el-alert>
@@ -206,6 +211,7 @@
                 <figcaption class="frame-caption">
                   <span class="frame-caption__time">{{ formatTimestamp(kf.timestamp_seconds) }}</span>
                   <span v-if="frameCaption(kf.timestamp_seconds)" class="frame-caption__text">{{ frameCaption(kf.timestamp_seconds) }}</span>
+                  <span v-else class="frame-caption__text frame-caption__text--empty">暂无画面描述</span>
                 </figcaption>
               </figure>
             </div>
@@ -217,10 +223,18 @@
           </div>
 
           <div class="qa-section">
-            <h3 class="section-title">视频问答</h3>
-            <p class="qa-hint">基于真实转录与画面内容回答，可连续追问；回答会尽量标注 [MM:SS] 出处。当前回复模型为豆包 2.1 Turbo，流式输出。</p>
+            <div class="qa-head">
+              <div class="qa-head__text">
+                <h3 class="section-title qa-title">视频问答</h3>
+                <p class="qa-hint">基于真实转录与画面内容回答，可连续追问；回答会尽量标注 [MM:SS] 出处。</p>
+              </div>
+              <el-tag size="small" effect="plain" class="qa-model-tag">豆包 2.1 Turbo · 流式</el-tag>
+            </div>
             <div class="qa-chat">
-              <div v-if="qaMessages.length === 0 && !qaStreaming" class="qa-empty">还没有提问，试试问“这个视频主要讲了什么？”</div>
+              <div v-if="qaMessages.length === 0 && !qaStreaming" class="qa-empty">
+                <el-icon class="qa-empty__icon" aria-hidden="true"><ChatDotRound /></el-icon>
+                <p>还没有提问，试试问“这个视频主要讲了什么？”</p>
+              </div>
               <div v-for="(msg, i) in qaMessages" :key="i" class="qa-msg" :class="msg.role === 'user' ? 'qa-msg--user' : 'qa-msg--assistant'">
                 <div v-if="msg.role === 'user'" class="qa-msg__role">你</div>
                 <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
@@ -229,7 +243,11 @@
               <div v-if="qaStreaming" class="qa-msg qa-msg--assistant">
                 <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
                 <div class="qa-msg__bubble qa-msg__bubble--streaming">
-                  <span v-if="!qaStreamingText" class="qa-typing">正在思考…</span>
+                  <span v-if="!qaStreamingText" class="qa-typing">
+                    <span class="qa-typing__dot"></span>
+                    <span class="qa-typing__dot"></span>
+                    <span class="qa-typing__dot"></span>
+                  </span>
                   <template v-else>{{ qaStreamingText }}</template>
                 </div>
               </div>
@@ -264,7 +282,11 @@
         </div>
 
         <div v-else-if="active.status === 'failed'" class="results-failed">
-          <p class="results-failed__text">任务失败，左侧执行过程会标出失败位置。</p>
+          <el-alert v-if="cookieError" type="warning" :closable="false" show-icon class="cookie-error">
+            <template #title>平台 Cookie 已失效</template>
+            <p>请提醒管理员更新 <code>rag-service/cookies.txt</code> 后再试。</p>
+          </el-alert>
+          <p v-else class="results-failed__text">任务失败，左侧执行过程会标出失败位置。</p>
         </div>
       </div>
     </section>
@@ -312,7 +334,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { CircleCheck, CircleClose, Document, FolderOpened, Loading, Minus, Promotion, Refresh, UploadFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
+import { ChatDotRound, CircleCheck, CircleClose, Document, FolderOpened, Loading, Minus, Promotion, Refresh, UploadFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
 import {
   agentAvatarUrl as getAgentAvatarUrl,
   askQuestionStream,
@@ -790,6 +812,16 @@ const consoleSubtitle = computed(() => {
   return `任务 ${task.task_id} · ${stageText(task.stage)}`
 })
 
+const cookieError = computed<string>(() => {
+  const message = active.value?.error || ''
+  if (!message) return ''
+  const lower = message.toLowerCase()
+  if (lower.includes('cookie') || lower.includes('cookies') || (lower.includes('抖音') && lower.includes('登录'))) {
+    return message
+  }
+  return ''
+})
+
 function frameCaption(seconds: number): string {
   const captions = active.value?.summary?.keyframe_captions
   if (!captions) return ''
@@ -1186,6 +1218,25 @@ onUnmounted(() => {
   margin-bottom: 14px;
 }
 
+.cookie-error__hint {
+  margin: 4px 0 0;
+  font-weight: 500;
+}
+
+.cookie-error__detail {
+  margin: 6px 0 0;
+  font-size: 12px;
+  color: var(--text-secondary);
+  word-break: break-all;
+}
+
+.cookie-error code {
+  background: var(--bg-subtle);
+  padding: 1px 4px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+
 .phase-list {
   display: flex;
   flex-direction: column;
@@ -1363,6 +1414,12 @@ onUnmounted(() => {
   font-size: 13px;
 }
 
+.results-failed .cookie-error {
+  max-width: 480px;
+  margin: 0 auto;
+  text-align: left;
+}
+
 .detail-meta {
   display: flex;
   flex-wrap: wrap;
@@ -1458,6 +1515,12 @@ onUnmounted(() => {
   line-height: 1.5;
 }
 
+.frame-caption__text--empty {
+  color: var(--text-tertiary);
+  font-style: italic;
+  opacity: 0.8;
+}
+
 .transcript-section {
   margin-top: 8px;
 }
@@ -1478,34 +1541,78 @@ onUnmounted(() => {
 }
 
 .qa-section {
-  margin-top: 16px;
+  margin-top: 20px;
+  padding-top: 4px;
+}
+
+.qa-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 12px;
+}
+
+.qa-head__text {
+  min-width: 0;
+}
+
+.qa-title {
+  margin: 0 0 6px;
 }
 
 .qa-hint {
-  margin: 0 0 12px;
+  margin: 0;
   font-size: 12px;
+  line-height: 1.7;
   color: var(--text-tertiary);
+}
+
+.qa-model-tag {
+  flex-shrink: 0;
+  margin-top: 2px;
+  border-radius: var(--radius-full);
+  letter-spacing: 0.02em;
 }
 
 .qa-chat {
-  height: min(62vh, 720px);
-  min-height: 360px;
-  max-height: 720px;
+  height: min(60vh, 680px);
+  min-height: 380px;
+  max-height: 680px;
   overflow-y: auto;
-  padding: 16px;
-  border-radius: var(--radius-2xl);
-  background: var(--bg-subtle);
+  padding: 20px;
+  border-radius: var(--radius-3xl);
+  background:
+    radial-gradient(circle at 90% 0%, color-mix(in srgb, var(--accent-blue) 5%, transparent) 0%, transparent 38%),
+    var(--bg-elevated);
   border: 1px solid var(--border-subtle);
+  box-shadow: var(--shadow-card);
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 16px;
+  scroll-behavior: smooth;
 }
 
 .qa-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
   text-align: center;
   font-size: 13px;
   color: var(--text-tertiary);
-  padding: 18px 0;
+  padding: 40px 12px;
+}
+
+.qa-empty__icon {
+  font-size: 34px;
+  color: color-mix(in srgb, var(--accent-blue) 45%, var(--text-tertiary));
+}
+
+.qa-empty p {
+  margin: 0;
 }
 
 .qa-msg {
@@ -1520,16 +1627,17 @@ onUnmounted(() => {
 
 .qa-msg__role {
   flex-shrink: 0;
-  width: 36px;
-  height: 36px;
+  width: 34px;
+  height: 34px;
   display: flex;
   align-items: center;
   justify-content: center;
   border-radius: var(--radius-full);
   font-size: 12px;
-  font-weight: 600;
-  color: var(--text-primary);
-  background: color-mix(in srgb, var(--accent-blue) 14%, transparent);
+  font-weight: 700;
+  color: #fff;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-indigo));
+  box-shadow: 0 4px 10px -3px color-mix(in srgb, var(--accent-blue) 45%, transparent);
 }
 
 .qa-msg__avatar-img {
@@ -1538,40 +1646,80 @@ onUnmounted(() => {
   height: 38px;
   border-radius: var(--radius-full);
   object-fit: cover;
-  border: 1px solid var(--border-subtle);
+  border: 2px solid color-mix(in srgb, var(--accent-blue) 22%, transparent);
   background: var(--bg-subtle);
-}
-
-.qa-msg--user .qa-msg__role {
-  background: color-mix(in srgb, var(--accent-blue) 22%, transparent);
+  box-shadow: 0 2px 8px -2px rgba(0, 0, 0, 0.08);
 }
 
 .qa-msg__bubble {
-  max-width: 86%;
+  max-width: 82%;
   padding: 12px 16px;
-  border-radius: var(--radius-2xl);
+  border-radius: 18px 18px 18px 6px;
   font-size: 14px;
-  line-height: 1.9;
+  line-height: 1.85;
   color: var(--text-primary);
-  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.03);
   white-space: pre-wrap;
   word-break: break-word;
 }
 
 .qa-msg--user .qa-msg__bubble {
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
+  background: linear-gradient(135deg, var(--accent-blue), color-mix(in srgb, var(--accent-indigo) 75%, var(--accent-blue)));
+  border-color: transparent;
+  color: #fff;
+  border-radius: 18px 18px 6px 18px;
+  box-shadow: 0 4px 14px -4px color-mix(in srgb, var(--accent-blue) 50%, transparent);
 }
 
 .qa-msg__bubble--streaming {
-  border: 1px dashed color-mix(in srgb, var(--accent-blue) 35%, transparent);
+  background: var(--bg-subtle);
+  border: 1px dashed color-mix(in srgb, var(--accent-blue) 45%, transparent);
+  color: var(--text-secondary);
 }
 
 .qa-typing {
-  color: var(--text-tertiary);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 20px;
+}
+
+.qa-typing__dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--radius-full);
+  background: var(--accent-blue);
+  opacity: 0.4;
+  animation: qaTyping 1.2s ease-in-out infinite;
+}
+
+.qa-typing__dot:nth-child(2) {
+  animation-delay: 0.15s;
+}
+
+.qa-typing__dot:nth-child(3) {
+  animation-delay: 0.3s;
 }
 
 .qa-input {
-  margin-top: 12px;
+  margin-top: 14px;
+  padding: 10px;
+  border-radius: var(--radius-2xl);
+  background: var(--bg-subtle);
+  border: 1px solid var(--border-subtle);
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.qa-input:focus-within {
+  border-color: color-mix(in srgb, var(--accent-blue) 45%, transparent);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent-blue) 10%, transparent);
+}
+
+@keyframes qaTyping {
+  0%, 60%, 100% { transform: translateY(0); opacity: 0.35; }
+  30% { transform: translateY(-3px); opacity: 1; }
 }
 
 .is-loading {

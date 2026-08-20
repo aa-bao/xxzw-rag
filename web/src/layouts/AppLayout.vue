@@ -1,8 +1,5 @@
 <template>
   <div class="app-layout">
-    <!-- 全局环境光（右上角） -->
-    <div class="app-layout__glow app-layout__glow--1" aria-hidden="true"></div>
-
     <aside v-if="!embedded" class="app-sidebar">
       <!-- 侧栏内部环境光（透过玻璃可见） -->
       <div class="app-sidebar__glow app-sidebar__glow--a" aria-hidden="true"></div>
@@ -238,24 +235,8 @@ async function handleLogout() {
   display: flex;
   height: 100vh;
   overflow: hidden;
-  background: var(--bg-base);
-}
-
-/* ── 全局环境光 ── */
-.app-layout__glow {
-  position: absolute;
-  border-radius: var(--radius-full);
-  filter: blur(120px);
-  pointer-events: none;
-  z-index: 0;
-}
-
-.app-layout__glow--1 {
-  width: 560px;
-  height: 560px;
-  top: -180px;
-  right: 80px;
-  background: var(--glow-blue);
+  /* 页面主背景：浅蓝渐变 + 柔和弥散光（设计令牌 --bg-page，参考 dsh.market） */
+  background: var(--bg-page);
 }
 
 /* ── 侧边栏：Apple 玻璃 ── */

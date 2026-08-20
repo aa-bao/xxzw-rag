@@ -31,6 +31,7 @@ services:
       RPA_ENVIRONMENT: LOCAL
       RPA_RELEASE_VERSION: dev
       RPA_SOURCE_COMMIT: local
+      WX_CHANNELS_API_BASE_URL: ${WX_CHANNELS_API_BASE_URL:-http://127.0.0.1:2022}
     expose:
       - "8000"
     depends_on:

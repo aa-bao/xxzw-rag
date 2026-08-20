@@ -16,6 +16,8 @@ export interface KbInfo {
   index_status: KbIndexStatus
   similarity_threshold: number
   top_k: number
+  /** 默认 JSON/JSONL 映射模板版本 ID（未设置时为 null） */
+  default_mapping_version_id: number | null
   /** 封面图 URL（未设置封面时为 null） */
   cover_url: string | null
   created_at: string | null
@@ -64,6 +66,17 @@ export async function updateKb(id: number, input: UpdateKbInput): Promise<KbInfo
 
 export async function deleteKb(id: number): Promise<void> {
   await api.delete<null>(`/kb/${id}`)
+}
+
+/** 设置知识库默认 JSON/JSONL 映射模板版本；传 null 清除默认模板 */
+export async function setDefaultMappingVersion(
+  id: number,
+  mappingVersionId: number | null,
+): Promise<KbInfo> {
+  const resp = await api.put<KbInfo>(`/kb/${id}/default-mapping`, {
+    mapping_version_id: mappingVersionId,
+  })
+  return resp.data
 }
 
 /** 上传知识库封面图（jpg/png/webp/gif，≤5MB） */

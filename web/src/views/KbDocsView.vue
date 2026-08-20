@@ -24,7 +24,16 @@
       @uploaded="handleUploaded"
     />
 
-    <!-- ══ JSON 映射向导：JSON/JSONL 结构化入库 ══ -->
+    <!-- ══ 模板导入：JSON/JSONL 选择开发人员模板直接入库 ══ -->
+    <TemplateImportDialog
+      v-if="templateVisible && kbId !== null"
+      :visible="templateVisible"
+      :kb-id="kbId"
+      @update:visible="templateVisible = $event"
+      @ingested="handleWizardIngested"
+    />
+
+    <!-- ══ JSON 映射向导：JSON/JSONL 高级手动配置 ══ -->
     <JsonMappingWizard
       v-if="wizardVisible && kbId !== null"
       :visible="wizardVisible"
@@ -461,6 +470,7 @@ import { listChunks } from '../api/retrieval'
 import type { ChunkInfo } from '../api/retrieval'
 import UploadDialog from '../components/UploadDialog.vue'
 import UploadTypeDialog, { type UploadType } from '../components/UploadTypeDialog.vue'
+import TemplateImportDialog from '../components/TemplateImportDialog.vue'
 import JsonMappingWizard from '../components/json-mapping/JsonMappingWizard.vue'
 
 const route = useRoute()
@@ -845,14 +855,19 @@ function openChunks(row: DocRow) {
   router.push({ name: 'kb-chunks', params: { id: String(kbId.value), docId: String(row.id) } })
 }
 
-/* ── 上传入口：先选择普通文档或结构化数据 ── */
+/* ── 上传入口：普通文档 / 模板导入 / 高级导入 ── */
 const uploadTypeVisible = ref(false)
 const uploadVisible = ref(false)
+const templateVisible = ref(false)
 
 function handleUploadType(type: UploadType) {
   uploadTypeVisible.value = false
   if (type === 'document') {
     uploadVisible.value = true
+    return
+  }
+  if (type === 'template') {
+    templateVisible.value = true
     return
   }
   wizardDocId.value = null

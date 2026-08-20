@@ -41,8 +41,8 @@ const template: MappingTemplateSummary = {
   created_at: '2026-01-01T00:00:00Z',
   updated_at: null,
   versions: [
-    { version: 1, mapping, fingerprint: 'fp-v1', usage_count: 1, created_at: null, created_by: null },
-    { version: 2, mapping, fingerprint: 'fp-existing', usage_count: 2, created_at: null, created_by: null },
+    { id: 101, version: 1, mapping, fingerprint: 'fp-v1', usage_count: 1, created_at: null, created_by: null },
+    { id: 102, version: 2, mapping, fingerprint: 'fp-existing', usage_count: 2, created_at: null, created_by: null },
   ],
 }
 

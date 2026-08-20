@@ -20,8 +20,14 @@ import sys
 from pathlib import Path
 from urllib.parse import parse_qsl, urlencode, urlparse
 
-# 微信视频号分享链接解析服务
-SPH_API_ENDPOINT = "https://sph.litao.workers.dev/api/fetch_video_profile"
+# 微信视频号分享链接解析服务。
+# 新版 wx_channels_download 已移除旧云端接口（sph.litao.workers.dev），
+# 改为本地 HTTP API（默认 http://127.0.0.1:2022）。可通过环境变量覆盖。
+WX_CHANNELS_API_BASE_URL = (
+    os.getenv("WX_CHANNELS_API_BASE_URL") or "http://127.0.0.1:2022"
+).rstrip("/")
+SPH_API_ENDPOINT = f"{WX_CHANNELS_API_BASE_URL}/api/channels/parse_sph"
+WX_CHANNELS_FEED_PROFILE_ENDPOINT = f"{WX_CHANNELS_API_BASE_URL}/api/channels/feed/profile"
 BROWSER_USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
     "(KHTML, like Gecko) Chrome/126.0 Safari/537.36"
@@ -71,6 +77,31 @@ def failure_status(error: Exception) -> str:
 # ── 微信视频号 ──
 
 def is_weixin_sph_url(source: str) -> bool:
+    """识别微信视频号分享链接。
+
+    兼容旧版分享页（weixin.qq.com/sph/<id>）和新版网页预览页
+    （channels.weixin.qq.com/finder-preview/pages/sph?id=<id>）。
+    """
+    parsed = urlparse(source)
+    host = parsed.netloc.lower()
+    path = parsed.path or ""
+    return (
+        parsed.scheme in {"http", "https"}
+        and (
+            (host == "weixin.qq.com" and path.startswith("/sph/"))
+            or (
+                host == "channels.weixin.qq.com"
+                and (
+                    path.startswith("/finder-preview/pages/sph")
+                    or path == "/web/pages/feed"
+                )
+            )
+        )
+    )
+
+
+def is_weixin_legacy_sph_url(source: str) -> bool:
+    """旧版分享页 weixin.qq.com/sph/<id>。"""
     parsed = urlparse(source)
     return (
         parsed.scheme in {"http", "https"}
@@ -80,49 +111,151 @@ def is_weixin_sph_url(source: str) -> bool:
 
 
 def weixin_sph_id(source: str) -> str | None:
-    path = urlparse(source).path
-    match = re.match(r"^/sph/([^/]+)", path)
-    return match.group(1) if match else None
+    """提取视频号分享 ID（旧版路径或新版 query 参数）。"""
+    parsed = urlparse(source)
+    host = parsed.netloc.lower()
+    path = parsed.path
+    if host == "weixin.qq.com":
+        match = re.match(r"^/sph/([^/]+)", path)
+        return match.group(1) if match else None
+    if host == "channels.weixin.qq.com":
+        if path.startswith("/finder-preview/pages/sph"):
+            for key, value in parse_qsl(parsed.query):
+                if key == "id" and value:
+                    return value
+        if path == "/web/pages/feed":
+            query = dict(parse_qsl(parsed.query))
+            return query.get("oid") or query.get("nid")
+    return None
+
+
+def weixin_sph_share_url(source: str) -> str | None:
+    """把新旧 sph 分享链接归一成旧版 weixin.qq.com/sph/<id>。
+
+    新版 finder-preview 的 id 与旧版分享页 id 一致；归一后可以走
+    parse_sph 的元宝 cookie 通道，不需要为每个用户链接手动打开页面。
+    """
+    parsed = urlparse(source)
+    host = parsed.netloc.lower()
+    path = parsed.path
+    sph_id = ""
+    if host == "weixin.qq.com" and path.startswith("/sph/"):
+        match = re.match(r"^/sph/([^/]+)", path)
+        sph_id = match.group(1) if match else ""
+    elif host == "channels.weixin.qq.com" and path.startswith("/finder-preview/pages/sph"):
+        for key, value in parse_qsl(parsed.query):
+            if key == "id" and value:
+                sph_id = value
+                break
+    return f"https://weixin.qq.com/sph/{sph_id}" if sph_id else None
+
+
+def _wx_api_get_json(endpoint: str, params: dict[str, str], timeout: float) -> dict[str, object]:
+    """请求 wx_channels_download 本地 API，返回 JSON 对象。"""
+    import urllib.request
+
+    request = urllib.request.Request(
+        f"{endpoint}?{urlencode(params)}",
+        headers={"User-Agent": BROWSER_USER_AGENT},
+        method="GET",
+    )
+    with urllib.request.urlopen(request, timeout=max(1.0, timeout)) as response:
+        body = json.loads(response.read().decode("utf-8"))
+    if not isinstance(body, dict):
+        raise RuntimeError("视频号解析接口返回了非 JSON 对象")
+    return body
+
+
+def _weixin_feed_direct_url(feed: dict[str, object]) -> str:
+    return (
+        str(feed.get("videoUrl") or "")
+        or str((feed.get("h264VideoInfo") or {}).get("videoUrl") or "")
+        or str(feed.get("originVideoUrl") or "")
+    )
+
+
+def _parse_weixin_resolved(body: dict[str, object]) -> dict[str, object]:
+    """兼容 parse_sph（feedInfo）与 feed/profile（object）两种响应结构。"""
+    data = body.get("data")
+    if not isinstance(data, dict):
+        raise RuntimeError("视频号解析结果缺少 data")
+    inner = data.get("data")
+    if not isinstance(inner, dict):
+        inner = {}
+
+    feed = data.get("feedInfo") if isinstance(data.get("feedInfo"), dict) else {}
+    author = data.get("authorInfo") if isinstance(data.get("authorInfo"), dict) else {}
+    if not feed:
+        feed = inner.get("feedInfo") if isinstance(inner.get("feedInfo"), dict) else {}
+        author = inner.get("authorInfo") if isinstance(inner.get("authorInfo"), dict) else {}
+
+    direct_url = _weixin_feed_direct_url(feed)
+    title = str(feed.get("description") or "")
+    uploader = str(author.get("nickname") or "")
+    cover_url = str(feed.get("coverUrl") or "")
+    if direct_url:
+        return {
+            "url": direct_url,
+            "title": title,
+            "uploader": uploader,
+            "cover_url": cover_url,
+        }
+
+    obj = inner.get("object") if isinstance(inner.get("object"), dict) else {}
+    if obj:
+        desc = obj.get("objectDesc") if isinstance(obj.get("objectDesc"), dict) else {}
+        media = desc.get("media") if isinstance(desc.get("media"), list) else []
+        media_item: dict[str, object] = {}
+        for item in media:
+            if isinstance(item, dict) and item.get("url"):
+                media_item = item
+                break
+        direct_url = str(media_item.get("url") or "")
+        token = str(media_item.get("urlToken") or "")
+        if direct_url and token and not direct_url.endswith(token):
+            direct_url += token
+        title = str(desc.get("description") or "") or title
+        contact = obj.get("contact") if isinstance(obj.get("contact"), dict) else {}
+        uploader = str(contact.get("nickname") or "") or uploader
+        cover_url = str(media_item.get("coverUrl") or "") or cover_url
+        if direct_url:
+            return {
+                "url": direct_url,
+                "title": title,
+                "uploader": uploader,
+                "cover_url": cover_url,
+            }
+
+    raise RuntimeError("视频号解析结果中未找到视频链接")
 
 
 def resolve_weixin_source(source: str, timeout: float) -> dict[str, object]:
     """把微信视频号分享链接换成可直接下载的视频 URL。
 
-    调用提取服务的 fetch_video_profile API（要求浏览器 User-Agent），返回
-    带签名的 finder.video.qq.com 直链以及作者/标题元数据。
+    新版 wx_channels_download 不再提供云端接口，改为本地 HTTP API
+    （默认 http://127.0.0.1:2022）。优先走 parse_sph 的元宝 cookie 通道，
+    可避免为每个用户链接手动打开视频号页面；失败再回退 feed/profile。
     """
-    import urllib.request
+    candidates: list[tuple[str, str]] = []
+    # 先尝试 parse_sph：只要在 wx_channels_download 里配置了 cloudflare.sphCookie，
+    # 就能免手动打开每个用户视频页完成解析。新旧 sph 分享链接都归一成旧版 URL。
+    canonical = weixin_sph_share_url(source)
+    if canonical:
+        candidates.append((SPH_API_ENDPOINT, canonical))
+    # 兜底走 feed/profile：需要本地浏览器保持一个视频号页面打开。
+    candidates.append((WX_CHANNELS_FEED_PROFILE_ENDPOINT, source))
 
-    request = urllib.request.Request(
-        SPH_API_ENDPOINT,
-        data=json.dumps({"url": source}).encode("utf-8"),
-        headers={
-            "Content-Type": "application/json",
-            "User-Agent": BROWSER_USER_AGENT,
-        },
-        method="POST",
-    )
-    try:
-        with urllib.request.urlopen(request, timeout=max(1.0, timeout)) as response:
-            body = json.loads(response.read().decode("utf-8"))
-    except Exception as exc:
-        raise RuntimeError(f"视频号解析失败: {exc}") from exc
-    feed = ((body.get("data") or {}).get("feedInfo") or {})
-    author = ((body.get("data") or {}).get("authorInfo") or {})
-    direct_url = (
-        feed.get("videoUrl")
-        or (feed.get("h264VideoInfo") or {}).get("videoUrl")
-        or ""
-    )
-    if not direct_url:
-        raise RuntimeError("视频号解析结果中未找到视频链接")
-    validate_public_url(direct_url)
-    return {
-        "url": direct_url,
-        "title": feed.get("description") or "",
-        "uploader": author.get("nickname") or "",
-        "cover_url": feed.get("coverUrl") or "",
-    }
+    last_error: Exception | None = None
+    for endpoint, request_url in candidates:
+        try:
+            body = _wx_api_get_json(endpoint, {"url": request_url}, timeout)
+            result = _parse_weixin_resolved(body)
+            direct_url = str(result["url"])
+            validate_public_url(direct_url)
+            return result
+        except Exception as exc:  # noqa: BLE001 — 逐个接口尝试，最后统一报错
+            last_error = exc
+    raise RuntimeError(f"视频号解析失败: {last_error}") from last_error
 
 
 # ── 来源规范化 ──
@@ -143,6 +276,46 @@ def normalize_url(u: str) -> str:
     return f"{scheme}://{netloc}{path}{query}"
 
 
+def is_douyin_url(source: str) -> bool:
+    """识别抖音链接（douyin.com / iesdouyin.com，含短链与精选页）。"""
+    parsed = urlparse(source)
+    host = parsed.netloc.lower()
+    return (
+        parsed.scheme in {"http", "https"}
+        and ("douyin.com" in host or "iesdouyin.com" in host)
+    )
+
+
+def douyin_video_id(source: str) -> str | None:
+    """从抖音链接提取视频 ID（优先 modal_id，其次路径）。"""
+    parsed = urlparse(source)
+    host = parsed.netloc.lower()
+    if not ("douyin.com" in host or "iesdouyin.com" in host):
+        return None
+    # 精选页/搜索页/个人主页用 modal_id 标识当前视频。
+    for key, value in parse_qsl(parsed.query):
+        if key == "modal_id" and value:
+            return value
+    # /video/<id>、/note/<id>、/share/video/<id>、/share/note/<id>
+    match = re.search(r"/(?:video|note|share/(?:video|note))/(\d+)", parsed.path)
+    if match:
+        return match.group(1)
+    return None
+
+
+def normalize_douyin_url(source: str) -> str:
+    """把抖音分享/精选页链接归一成 yt-dlp 支持的 /video/<id>。
+
+    抖音的 /jingxuan?modal_id=... 等页面 yt-dlp 不认识，会报
+    “Unsupported URL”；提取出 modal_id 后换成标准视频页即可解析。
+    短链（v.douyin.com/...）没有直接可见 ID，保持原样交给 yt-dlp。
+    """
+    video_id = douyin_video_id(source)
+    if video_id:
+        return f"https://www.douyin.com/video/{video_id}"
+    return source
+
+
 def _video_id(u: str) -> str | None:
     p = urlparse(u)
     netloc = p.netloc.lower()
@@ -150,8 +323,10 @@ def _video_id(u: str) -> str | None:
         match = re.search(r"BV[0-9A-Za-z]+", u)
         if match:
             return match.group(0)
-    if netloc == "weixin.qq.com":
+    if netloc == "weixin.qq.com" or netloc.endswith(".weixin.qq.com"):
         return weixin_sph_id(u)
+    if "douyin.com" in netloc or "iesdouyin.com" in netloc:
+        return douyin_video_id(u)
     match = re.search(r"[?&]v=([^&]+)", u)
     if match:
         return match.group(1)
@@ -371,31 +546,38 @@ def select_best_caption_candidate(
 
 # ── yt-dlp 字幕 ──
 
-def try_url_captions(source: str, out_dir: Path, timeout: float) -> dict[str, object]:
+def try_url_captions(
+    source: str,
+    out_dir: Path,
+    timeout: float,
+    *,
+    no_proxy: bool = False,
+    cookies: Path | None = None,
+) -> dict[str, object]:
     """用 yt-dlp 抓取字幕（zh.* / en.*，vtt 格式），统计覆盖率。"""
     out_dir.mkdir(parents=True, exist_ok=True)
     template = out_dir / "source.%(ext)s"
-    result = run_command(
-        [
-            sys.executable,
-            "-m",
-            "yt_dlp",
-            "--skip-download",
-            "--no-playlist",
-            "--write-subs",
-            "--write-auto-subs",
-            "--sub-langs",
-            "zh.*,en.*",
-            "--sub-format",
-            "vtt",
-            "--write-info-json",
-            "--no-warnings",
-            "-o",
-            str(template),
-            source,
-        ],
-        timeout,
-    )
+    command = [
+        sys.executable,
+        "-m",
+        "yt_dlp",
+        "--skip-download",
+        "--no-playlist",
+        "--write-subs",
+        "--write-auto-subs",
+        "--sub-langs",
+        "zh.*,en.*",
+        "--sub-format",
+        "vtt",
+        "--write-info-json",
+        "--no-warnings",
+    ]
+    if cookies:
+        command.extend(["--cookies", str(cookies)])
+    if no_proxy:
+        command.extend(["--proxy", ""])
+    command.extend(["-o", str(template), source])
+    result = run_command(command, timeout)
     info_files = list(out_dir.glob("*.info.json"))
     info = json.loads(info_files[0].read_text(encoding="utf-8")) if info_files else {}
     duration = float(info.get("duration") or 0)
@@ -446,6 +628,7 @@ def download_url_audio(
     referer: str | None = None,
     cookies: Path | None = None,
     cookies_from_browser: str | None = None,
+    no_proxy: bool = False,
 ) -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     template = out_dir / "audio.%(ext)s"
@@ -456,6 +639,8 @@ def download_url_audio(
         command.extend(["--cookies-from-browser", cookies_from_browser])
     if referer:
         command.extend(["--add-header", f"Referer:{referer}"])
+    if no_proxy:
+        command.extend(["--proxy", ""])
     command.extend(
         [
             "--no-playlist",
@@ -486,6 +671,7 @@ def download_url_video(
     cookies: Path | None = None,
     cookies_from_browser: str | None = None,
     max_height: int = 360,
+    no_proxy: bool = False,
 ) -> Path:
     """下载低码率视频（用于关键帧提取）。"""
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -496,6 +682,8 @@ def download_url_video(
         command.extend(["--cookies-from-browser", cookies_from_browser])
     if referer:
         command.extend(["--add-header", f"Referer:{referer}"])
+    if no_proxy:
+        command.extend(["--proxy", ""])
     command.extend(
         [
             "--no-playlist",
@@ -527,6 +715,7 @@ def acquire_url_audio(
     cookie_file: Path | None = None,
     referer: str | None = None,
     resolve_direct: object | None = None,
+    no_proxy: bool = False,
 ) -> tuple[Path, str, list[dict[str, object]] | None, Path | None, str | None]:
     """从公开 URL 下载音频。
 
@@ -551,6 +740,7 @@ def acquire_url_audio(
                 time_left(),
                 referer=referer,
                 cookies=cookie_file,
+                no_proxy=no_proxy,
             ),
             "yt-dlp", None, None, None,
         )
@@ -568,6 +758,7 @@ def acquire_url_audio(
                         time_left(),
                         referer=referer,
                         cookies=cookie_file,
+                        no_proxy=no_proxy,
                     ),
                     "yt-dlp-resolved", None, None, None,
                 )
@@ -581,9 +772,17 @@ def acquire_url_audio(
                         download_url_audio(
                             source, work / "cookie-download", time_left(),
                             cookies_from_browser=br,
+                            no_proxy=no_proxy,
                         ),
                         "yt-dlp-cookies", None, None, None,
                     )
                 except Exception:
                     continue
-        raise AcquisitionError(str(primary_error)) from primary_error
+        message = str(primary_error)
+        if is_douyin_url(source) and "cookies" in message.lower():
+            message = (
+                "抖音需要有效的新鲜 Cookie：请打开抖音网页版并确认已登录，"
+                "然后更新 rag-service/cookies.txt（需包含 .douyin.com 与 .iesdouyin.com 的 Cookie）。"
+                f"原始错误：{message}"
+            )
+        raise AcquisitionError(message) from primary_error

@@ -4,15 +4,21 @@ from __future__ import annotations
 import pytest
 
 from src.video.acquire import (
+    _parse_weixin_resolved,
     caption_coverage,
     caption_needs_asr,
     choose_asr_ranges,
+    douyin_video_id,
+    is_douyin_url,
     is_url,
     is_weixin_sph_url,
+    normalize_douyin_url,
     parse_vtt_cues,
     parse_vtt_text,
     select_asr_ranges,
     validate_public_url,
+    weixin_sph_id,
+    weixin_sph_share_url,
 )
 from src.video.audio import parse_silence_points, plan_asr_chunks, plan_vad_chunks
 
@@ -36,7 +42,110 @@ def test_validate_public_url_rejects_private() -> None:
 
 def test_is_weixin_sph_url() -> None:
     assert is_weixin_sph_url("https://weixin.qq.com/sph/AbCd123") is True
+    assert is_weixin_sph_url(
+        "https://channels.weixin.qq.com/finder-preview/pages/sph?id=A1UG8y1n3l"
+    ) is True
+    assert is_weixin_sph_url(
+        "https://channels.weixin.qq.com/web/pages/feed?oid=abc&nid=def"
+    ) is True
     assert is_weixin_sph_url("https://www.bilibili.com/video/BV1xx") is False
+
+
+def test_weixin_sph_id() -> None:
+    assert weixin_sph_id("https://weixin.qq.com/sph/AbCd123") == "AbCd123"
+    assert (
+        weixin_sph_id(
+            "https://channels.weixin.qq.com/finder-preview/pages/sph?id=A1UG8y1n3l"
+        )
+        == "A1UG8y1n3l"
+    )
+    assert (
+        weixin_sph_id(
+            "https://channels.weixin.qq.com/web/pages/feed?oid=abc&nid=def"
+        )
+        == "abc"
+    )
+    assert (
+        weixin_sph_share_url(
+            "https://channels.weixin.qq.com/finder-preview/pages/sph?id=A1UG8y1n3l"
+        )
+        == "https://weixin.qq.com/sph/A1UG8y1n3l"
+    )
+    assert weixin_sph_share_url("https://weixin.qq.com/sph/AbCd123") == "https://weixin.qq.com/sph/AbCd123"
+
+
+def test_parse_weixin_resolved_supports_legacy_and_feed_profile() -> None:
+    legacy = {
+        "code": 0,
+        "msg": "成功",
+        "data": {
+            "data": {
+                "authorInfo": {"nickname": "作者"},
+                "feedInfo": {
+                    "description": "标题",
+                    "videoUrl": "https://finder.video.qq.com/xxx",
+                    "coverUrl": "https://finder.video.qq.com/cover",
+                },
+            },
+            "errCode": 0,
+            "errMsg": "",
+        },
+    }
+    assert _parse_weixin_resolved(legacy)["url"] == "https://finder.video.qq.com/xxx"
+
+    feed_profile = {
+        "code": 0,
+        "msg": "成功",
+        "data": {
+            "errCode": 0,
+            "errMsg": "ok",
+            "data": {
+                "object": {
+                    "contact": {"nickname": "作者"},
+                    "objectDesc": {
+                        "description": "标题",
+                        "media": [{
+                            "url": "https://finder.video.qq.com/xxx",
+                            "urlToken": "&token=abc",
+                            "coverUrl": "https://finder.video.qq.com/cover",
+                        }],
+                    },
+                }
+            },
+        },
+    }
+    assert (
+        _parse_weixin_resolved(feed_profile)["url"]
+        == "https://finder.video.qq.com/xxx&token=abc"
+    )
+
+
+# ── acquire: 抖音链接归一 ──
+
+def test_is_douyin_url() -> None:
+    assert is_douyin_url("https://www.douyin.com/jingxuan?modal_id=123456") is True
+    assert is_douyin_url("https://www.iesdouyin.com/share/video/123456/") is True
+    assert is_douyin_url("https://v.douyin.com/abc123/") is True
+    assert is_douyin_url("https://www.bilibili.com/video/BV1xx") is False
+
+
+def test_douyin_video_id() -> None:
+    assert douyin_video_id("https://www.douyin.com/jingxuan?modal_id=7673818673068477722") == "7673818673068477722"
+    assert douyin_video_id("https://www.douyin.com/video/7673818673068477722") == "7673818673068477722"
+    assert douyin_video_id("https://www.iesdouyin.com/share/video/7673818673068477722/") == "7673818673068477722"
+    assert douyin_video_id("https://v.douyin.com/abc123/") is None
+    assert douyin_video_id("https://www.bilibili.com/video/BV1xx") is None
+
+
+def test_normalize_douyin_url() -> None:
+    assert normalize_douyin_url(
+        "https://www.douyin.com/jingxuan?modal_id=7673818673068477722"
+    ) == "https://www.douyin.com/video/7673818673068477722"
+    assert normalize_douyin_url(
+        "https://www.douyin.com/video/7673818673068477722"
+    ) == "https://www.douyin.com/video/7673818673068477722"
+    # 短链没有直接可见 ID，原样返回
+    assert normalize_douyin_url("https://v.douyin.com/abc123/") == "https://v.douyin.com/abc123/"
 
 
 # ── acquire: VTT 字幕 ──

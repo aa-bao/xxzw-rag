@@ -18,6 +18,8 @@ from src.db.models import (
     Document,
     DocumentJob,
     KnowledgeBase,
+    MappingTemplate,
+    MappingTemplateVersion,
     Message,
     QueryLog,
     Reference,
@@ -68,6 +70,11 @@ class TestKbRequest(BaseModel):
     similarity_threshold: float | None = Field(default=None, ge=0, le=1)
 
 
+class SetDefaultMappingRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    mapping_version_id: int | None = None
+
+
 def _serialize_kb(kb: KnowledgeBase, *, doc_count: int | None = None, chunk_total: int | None = None) -> dict[str, object]:
     return {
         "id": kb.id,
@@ -82,6 +89,7 @@ def _serialize_kb(kb: KnowledgeBase, *, doc_count: int | None = None, chunk_tota
         "index_status": kb.index_status,
         "similarity_threshold": float(kb.similarity_threshold) if kb.similarity_threshold is not None else None,
         "top_k": kb.top_k,
+        "default_mapping_version_id": kb.default_mapping_version_id,
         "doc_count": doc_count,
         "chunk_total": chunk_total,
         # 封面图 URL（相对路径存在时拼接；?v=updated_at 破缓存，换封面后强制刷新）
@@ -217,6 +225,38 @@ async def update_kb(
         raise AppError("NO_UPDATE_FIELDS", "没有需要更新的字段", status_code=400)
     for field, value in updates.items():
         setattr(kb, field, value)
+    await db.commit()
+    await db.refresh(kb)
+    return {"success": True, "data": _serialize_kb(kb)}
+
+
+@router.put("/{kb_id}/default-mapping")
+async def set_default_mapping(
+    kb_id: int,
+    body: SetDefaultMappingRequest,
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_KB_MANAGE)),
+    db: AsyncSession = Depends(_session_factory),
+) -> dict[str, object]:
+    """设置知识库默认 JSON/JSONL 映射模板版本；传 null 清除默认模板。"""
+    kb = await _get_kb_or_404(db, kb_id, principal)
+
+    if body.mapping_version_id is not None:
+        version = await db.scalar(
+            select(MappingTemplateVersion)
+            .join(
+                MappingTemplate,
+                MappingTemplate.id == MappingTemplateVersion.mapping_template_id,
+            )
+            .where(
+                MappingTemplateVersion.id == body.mapping_version_id,
+                MappingTemplate.created_by_user_id == principal.internal_user_id,
+                scope_condition(MappingTemplate, principal),
+            )
+        )
+        if version is None:
+            raise AppError("MAPPING_VERSION_NOT_FOUND", "映射模板版本不存在", status_code=404)
+
+    kb.default_mapping_version_id = body.mapping_version_id
     await db.commit()
     await db.refresh(kb)
     return {"success": True, "data": _serialize_kb(kb)}

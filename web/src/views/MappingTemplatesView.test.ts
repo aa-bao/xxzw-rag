@@ -54,8 +54,8 @@ const template: MappingTemplateSummary = {
   created_at: '2026-01-02T03:04:05Z',
   updated_at: '2026-02-03T04:05:06Z',
   versions: [
-    { version: 1, mapping, fingerprint: 'fp-v1', usage_count: 2, created_at: '2026-01-02T03:04:05Z', created_by: 'alice' },
-    { version: 2, mapping, fingerprint: 'fp-current', usage_count: 3, created_at: '2026-02-03T04:05:06Z', created_by: 'alice' },
+    { id: 101, version: 1, mapping, fingerprint: 'fp-v1', usage_count: 2, created_at: '2026-01-02T03:04:05Z', created_by: 'alice' },
+    { id: 102, version: 2, mapping, fingerprint: 'fp-current', usage_count: 3, created_at: '2026-02-03T04:05:06Z', created_by: 'alice' },
   ],
 }
 

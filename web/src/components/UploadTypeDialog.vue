@@ -31,19 +31,38 @@
 
       <button
         type="button"
+        class="upload-type-card upload-type-card--template"
+        @click="selectType('template')"
+      >
+        <span class="upload-type-card__icon" aria-hidden="true">
+          <el-icon><MagicStick /></el-icon>
+        </span>
+        <span class="upload-type-card__body">
+          <span class="upload-type-card__heading">
+            <span class="upload-type-card__title">模板导入</span>
+            <span class="upload-type-card__badge">推荐</span>
+          </span>
+          <span class="upload-type-card__description">JSON、JSONL</span>
+          <span class="upload-type-card__hint">上传后选择开发人员配置好的模板，一键入库。</span>
+        </span>
+        <el-icon class="upload-type-card__arrow" aria-hidden="true"><ArrowRight /></el-icon>
+      </button>
+
+      <button
+        type="button"
         class="upload-type-card upload-type-card--structured"
-        @click="selectType('structured')"
+        @click="selectType('advanced')"
       >
         <span class="upload-type-card__icon" aria-hidden="true">
           <el-icon><DataAnalysis /></el-icon>
         </span>
         <span class="upload-type-card__body">
           <span class="upload-type-card__heading">
-            <span class="upload-type-card__title">结构化数据</span>
-            <span class="upload-type-card__badge">映射后入库</span>
+            <span class="upload-type-card__title">高级导入</span>
+            <span class="upload-type-card__badge">开发人员</span>
           </span>
           <span class="upload-type-card__description">JSON、JSONL</span>
-          <span class="upload-type-card__hint">适合帖子、评论等层级数据，先确认字段和关系。</span>
+          <span class="upload-type-card__hint">结构检测、字段映射、关系层级，适合开发人员配置模板。</span>
         </span>
         <el-icon class="upload-type-card__arrow" aria-hidden="true"><ArrowRight /></el-icon>
       </button>
@@ -52,9 +71,9 @@
 </template>
 
 <script setup lang="ts">
-import { ArrowRight, DataAnalysis, Document } from '@element-plus/icons-vue'
+import { ArrowRight, DataAnalysis, Document, MagicStick } from '@element-plus/icons-vue'
 
-export type UploadType = 'document' | 'structured'
+export type UploadType = 'document' | 'template' | 'advanced'
 
 defineProps<{
   visible: boolean
@@ -127,6 +146,16 @@ function selectType(value: UploadType) {
 .upload-type-card--structured .upload-type-card__icon {
   background: color-mix(in srgb, var(--accent-indigo) 11%, transparent);
   color: var(--accent-indigo);
+}
+
+.upload-type-card--template .upload-type-card__icon {
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  color: var(--accent-green);
+}
+
+.upload-type-card--template .upload-type-card__badge {
+  background: color-mix(in srgb, var(--accent-green) 12%, transparent);
+  color: var(--accent-green);
 }
 
 .upload-type-card__body {

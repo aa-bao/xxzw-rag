@@ -6,7 +6,7 @@ from httpx import ASGITransport, AsyncClient
 
 from src.api.app import create_app
 from src.auth.passwords import PasswordHasher
-from src.db.models import KnowledgeBase, User
+from src.db.models import KnowledgeBase, MappingTemplate, MappingTemplateVersion, User
 from src.db.session import create_engine, create_session_factory
 from src.retrieval.module import RetrievedChunk
 from src.shared.config import Settings
@@ -193,6 +193,82 @@ async def test_create_requires_admin(
 
         assert response.status_code == 403
         assert response.json()["error"]["code"] == "FORBIDDEN"
+    finally:
+        await engine.dispose()
+
+
+async def test_set_default_mapping_version(
+    migrated_mysql_url: str,
+) -> None:
+    """PUT /api/kb/{id}/default-mapping 设置/清除知识库默认映射模板版本。"""
+    hasher = PasswordHasher()
+    username = f"admin-default-map-{uuid.uuid4().hex[:8]}"
+    engine = create_engine(migrated_mysql_url, pool_size=2)
+    factory = create_session_factory(engine)
+    try:
+        async with factory() as session:
+            admin = User(
+                username=username,
+                password_hash=hasher.hash("secret"),
+                role="account_admin",
+                status="active",
+            )
+            session.add(admin)
+            await session.flush()
+            kb = KnowledgeBase(
+                owner_user_id=admin.id,
+                name="default-map-kb",
+                embedding_model="test",
+                embedding_dimension=128,
+                active_collection="kb_default_map_v1",
+            )
+            session.add(kb)
+            await session.flush()
+            template = MappingTemplate(
+                name="qa-template",
+                source_format="jsonl",
+                created_by_user_id=admin.id,
+            )
+            session.add(template)
+            await session.flush()
+            version = MappingTemplateVersion(
+                mapping_template_id=template.id,
+                version=1,
+                mapping_json='{"source_format":"jsonl","record_types":[]}',
+                structure_fingerprint="fp",
+                created_by_user_id=admin.id,
+            )
+            session.add(version)
+            await session.commit()
+            kb_id = kb.id
+            version_id = version.id
+
+        app = create_app(_settings(migrated_mysql_url), session_factory=factory)
+        async with AsyncClient(
+            transport=ASGITransport(app=app),
+            base_url="http://127.0.0.1:8000",
+        ) as client:
+            cookie = await _login(client, username, "secret")
+
+            resp = await client.put(
+                f"/api/kb/{kb_id}/default-mapping",
+                json={"mapping_version_id": version_id},
+                cookies={"rag_session": cookie},
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["data"]["default_mapping_version_id"] == version_id
+
+            resp = await client.get(f"/api/kb/{kb_id}", cookies={"rag_session": cookie})
+            assert resp.status_code == 200
+            assert resp.json()["data"]["default_mapping_version_id"] == version_id
+
+            resp = await client.put(
+                f"/api/kb/{kb_id}/default-mapping",
+                json={"mapping_version_id": None},
+                cookies={"rag_session": cookie},
+            )
+            assert resp.status_code == 200, resp.text
+            assert resp.json()["data"]["default_mapping_version_id"] is None
     finally:
         await engine.dispose()
 

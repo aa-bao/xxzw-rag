@@ -10,6 +10,9 @@
 
 ## 快速启动
 
+> Agent / 人工通用 SOP：见 [docs/项目启动SOP.md](docs/项目启动SOP.md)。
+> 本机开发一键启动（幂等）：`powershell -NoProfile -ExecutionPolicy Bypass -File scripts/start-project.ps1`
+
 ### 1. 配置环境变量
 
 ```bash

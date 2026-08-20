@@ -158,6 +158,7 @@ export interface PreviewResponse {
 /* ── 模板与版本 ── */
 
 export interface MappingVersionSummary {
+  id: number
   version: number
   mapping: MappingDefinition
   fingerprint: string

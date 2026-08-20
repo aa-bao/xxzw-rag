@@ -8,7 +8,7 @@ afterEach(() => {
 })
 
 describe('UploadTypeDialog', () => {
-  it('offers ordinary and structured upload flows', async () => {
+  it('offers ordinary, template and advanced upload flows', async () => {
     mount(UploadTypeDialog, {
       props: { visible: true },
       global: { plugins: [ElementPlus] },
@@ -17,13 +17,15 @@ describe('UploadTypeDialog', () => {
 
     expect(document.body.textContent).toContain('普通文档')
     expect(document.body.textContent).toContain('TXT、Markdown、DOCX')
-    expect(document.body.textContent).toContain('结构化数据')
+    expect(document.body.textContent).toContain('模板导入')
+    expect(document.body.textContent).toContain('高级导入')
     expect(document.body.textContent).toContain('JSON、JSONL')
   })
 
   it.each([
     ['普通文档', 'document'],
-    ['结构化数据', 'structured'],
+    ['模板导入', 'template'],
+    ['高级导入', 'advanced'],
   ] as const)('emits %s selection and closes', async (label, value) => {
     const wrapper = mount(UploadTypeDialog, {
       props: { visible: true },

@@ -29,6 +29,8 @@ test/
 rag-service/uvicorn.local.*.log
 rag-service/uvicorn.out.log
 rag-service/uvicorn.err.log
+rag-service/backend.out.log
+rag-service/backend.err.log
 web/vite.dev.log
 
 # CI 门禁报告产物（scripts/generate-gate-report.py 默认输出）
