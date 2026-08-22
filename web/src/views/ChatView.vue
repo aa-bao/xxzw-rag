@@ -23,11 +23,11 @@
               v-for="conv in sortedConversations"
               :key="conv.id"
               class="chat-view__conv"
+              :class="{ 'chat-view__conv--active': conv.id === activeConversationId }"
             >
               <button
                 type="button"
                 class="chat-view__conv-btn btn-press"
-                :class="{ 'chat-view__conv-btn--active': conv.id === activeConversationId }"
                 @click="switchConversation(conv)"
                 @dblclick="startRename(conv)"
               >
@@ -45,30 +45,45 @@
                     @blur="commitRename(conv)"
                   />
                 </span>
-                <span v-else class="chat-view__conv-title" :title="conv.title || ''">
-                  {{ conv.title || '未命名对话' }}
-                </span>
-                <span class="chat-view__conv-kb">{{ convKbLabel(conv) }}</span>
+                <template v-else>
+                  <span class="chat-view__conv-body">
+                    <span class="chat-view__conv-title" :title="conv.title || ''">
+                      {{ conv.title || '未命名对话' }}
+                    </span>
+                    <span v-if="convKbLabel(conv)" class="chat-view__conv-kb">
+                      {{ convKbLabel(conv) }}
+                    </span>
+                  </span>
+                </template>
               </button>
-              <template v-if="renamingId !== conv.id">
-                <el-button
-                  text
-                  class="chat-view__conv-rename-btn btn-press"
-                  aria-label="重命名会话"
-                  title="重命名"
-                  @click.stop="startRename(conv)"
+              <el-dropdown
+                v-if="renamingId !== conv.id"
+                trigger="click"
+                class="chat-view__conv-more"
+                :class="{ 'is-open': openMenuId === conv.id }"
+                @command="(cmd: string) => onConvMenuCommand(cmd, conv)"
+                @visible-change="(v: boolean) => (openMenuId = v ? conv.id : null)"
+                @click.stop
+              >
+                <button
+                  type="button"
+                  class="chat-view__conv-more-btn btn-press"
+                  aria-label="更多操作"
+                  title="更多"
                 >
-                  <el-icon><EditPen /></el-icon>
-                </el-button>
-                <el-button
-                  text
-                  class="chat-view__conv-del btn-press"
-                  aria-label="删除会话"
-                  @click.stop="handleDeleteConversation(conv)"
-                >
-                  <el-icon><Delete /></el-icon>
-                </el-button>
-              </template>
+                  <el-icon><MoreFilled /></el-icon>
+                </button>
+                <template #dropdown>
+                  <el-dropdown-menu class="chat-view__conv-menu">
+                    <el-dropdown-item command="rename">
+                      <el-icon><EditPen /></el-icon>重命名
+                    </el-dropdown-item>
+                    <el-dropdown-item command="delete" class="chat-view__conv-menu-del">
+                      <el-icon><Delete /></el-icon>删除
+                    </el-dropdown-item>
+                  </el-dropdown-menu>
+                </template>
+              </el-dropdown>
             </li>
           </ul>
           <p v-else class="chat-view__convs-empty">暂无会话，点击「新对话」创建</p>
@@ -267,7 +282,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, ref } from 'vue'
 import { useRoute } from 'vue-router'
-import { ChatDotRound, Close, Delete, Document, EditPen, Plus, Promotion } from '@element-plus/icons-vue'
+import { ChatDotRound, Close, Delete, Document, EditPen, MoreFilled, Plus, Promotion } from '@element-plus/icons-vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   createConversation,
@@ -305,6 +320,9 @@ const messagesEl = ref<HTMLElement | null>(null)
 const renamingId = ref<string | null>(null)
 const renameDraft = ref('')
 const renameInputEl = ref<HTMLInputElement | null>(null)
+
+/** 当前打开的 ⋮ 菜单所属会话 id（用于展开时保持按钮可见） */
+const openMenuId = ref<string | null>(null)
 
 /** 加载历史消息的竞态令牌：快速切换会话/KB 时丢弃过期响应 */
 let loadToken = 0
@@ -438,6 +456,20 @@ function kbNameOf(kbId: number): string {
 
 function scoreText(score: number): string {
   return `相似度 ${(score * 100).toFixed(1)}%`
+}
+
+/** 与服务端自动命名规则保持一致：首条问题截取前 20 个字符作为会话标题 */
+function autoConversationTitle(question: string): string {
+  const q = question.trim()
+  return q.length <= 20 ? q : `${q.slice(0, 20)}…`
+}
+
+/** 会话还没有标题时，把首条问题实时同步到侧栏列表 */
+function applyAutoConversationTitle(cid: string, question: string) {
+  const conv = conversations.value.find((c) => c.id === cid)
+  if (conv && !conv.title) {
+    conv.title = autoConversationTitle(question)
+  }
 }
 
 function bubbleClass(msg: ChatMessageInfo): string {
@@ -574,6 +606,12 @@ async function handleDeleteConversation(conv: ConversationInfo) {
   ElMessage.success('已删除')
 }
 
+/** 会话 ⋮ 菜单点击分发（Gemini 风格）：目前仅重命名 / 删除两项可用 */
+function onConvMenuCommand(cmd: string, conv: ConversationInfo) {
+  if (cmd === 'rename') startRename(conv)
+  else if (cmd === 'delete') handleDeleteConversation(conv)
+}
+
 function startRename(conv: ConversationInfo) {
   renamingId.value = conv.id
   renameDraft.value = conv.title ?? ''
@@ -626,6 +664,7 @@ async function handleSend() {
     }
     const cid = activeConversationId.value
     if (cid === null) return
+    applyAutoConversationTitle(cid, q)
     messages.value.push({
       role: 'user',
       content: q,
@@ -767,12 +806,12 @@ onMounted(async () => {
 
 /* ═══════════ 左栏 ═══════════ */
 .chat-view__side {
-  width: 220px;
+  width: 260px;
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
   min-height: 0;
-  padding: 20px 16px;
+  padding: 20px 14px;
   border-right: 1px solid var(--border-subtle);
 }
 
@@ -813,40 +852,56 @@ onMounted(async () => {
   gap: 4px;
 }
 
+/* 整行承载背景 + 阴影，使右侧 ⋮ 按钮也落在阴影内 */
 .chat-view__conv {
   display: flex;
   align-items: center;
-  gap: 4px;
-  border-radius: var(--radius-3xl);
+  gap: 2px;
+  padding: 2px 6px 2px 12px;
+  border-radius: 16px;
+  transition: background-color 0.15s ease, box-shadow 0.15s ease;
 }
 
 .chat-view__conv:hover,
 .chat-view__conv:focus-within {
-  background: color-mix(in srgb, var(--text-primary) 4%, transparent);
+  background: color-mix(in srgb, var(--text-primary) 5%, transparent);
+  box-shadow: 0 6px 16px -6px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
+}
+
+.chat-view__conv--active {
+  background: color-mix(in srgb, var(--text-primary) 8%, transparent);
+  box-shadow: 0 4px 14px -6px rgba(0, 0, 0, 0.10), 0 0 0 1px rgba(0, 0, 0, 0.03);
 }
 
 .chat-view__conv-btn {
   flex: 1;
   min-width: 0;
   display: flex;
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 2px;
-  padding: 9px 12px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 0;
   border: none;
-  border-radius: var(--radius-3xl);
+  border-radius: 12px;
   background: transparent;
   color: var(--text-primary);
   font-family: inherit;
-  font-size: 13px;
+  font-size: 14px;
   cursor: pointer;
   text-align: left;
   user-select: none;
 }
 
-.chat-view__conv-btn--active {
-  background: color-mix(in srgb, var(--accent-blue) 12%, transparent);
-  color: var(--accent-blue);
+.chat-view__conv-btn:focus-visible {
+  outline: 2px solid var(--accent-blue);
+  outline-offset: -1px;
+}
+
+.chat-view__conv-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
 }
 
 .chat-view__conv-title {
@@ -854,22 +909,27 @@ onMounted(async () => {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.chat-view__conv--active .chat-view__conv-title {
+  color: var(--text-primary);
   font-weight: 500;
 }
 
-.chat-view__conv-btn--active .chat-view__conv-title {
-  font-weight: 600;
-}
-
 .chat-view__conv-rename {
-  width: 100%;
+  flex: 1;
+  min-width: 0;
 }
 
 .chat-view__conv-rename-input {
   width: 100%;
-  padding: 2px 6px;
+  padding: 3px 6px;
   border: 1px solid var(--accent-blue);
-  border-radius: var(--radius-lg);
+  border-radius: 8px;
   background: var(--bg-elevated);
   color: var(--text-primary);
   font: inherit;
@@ -879,47 +939,100 @@ onMounted(async () => {
 
 .chat-view__conv-kb {
   max-width: 100%;
-  font-size: 11px;
-  color: var(--text-tertiary);
-  letter-spacing: 0.03em;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--text-tertiary);
 }
 
-.chat-view__conv-btn--active .chat-view__conv-kb {
-  color: var(--accent-blue);
-}
-
-.chat-view__conv-rename-btn {
-  flex-shrink: 0;
-  opacity: 0;
-  padding: 4px;
+.chat-view__conv--active .chat-view__conv-kb {
   color: var(--text-secondary);
 }
 
-.chat-view__conv:hover .chat-view__conv-rename-btn,
-.chat-view__conv:focus-within .chat-view__conv-rename-btn {
-  opacity: 1;
-}
-
-.chat-view__conv-rename-btn:hover {
-  color: var(--accent-blue);
-}
-
-.chat-view__conv-del {
+/* ⋮ 更多按钮（Gemini 风格）：悬停行时淡入，点击弹出下拉菜单 */
+.chat-view__conv-more {
   flex-shrink: 0;
   opacity: 0;
-  padding: 4px;
-  color: var(--text-secondary);
+  border-radius: 8px;
+  transition: opacity 0.15s ease;
 }
 
-.chat-view__conv:hover .chat-view__conv-del,
-.chat-view__conv:focus-within .chat-view__conv-del {
+.chat-view__conv-more-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-tertiary);
+  font-size: 16px;
+  cursor: pointer;
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.chat-view__conv-more-btn:hover {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-primary);
+}
+
+.chat-view__conv:hover .chat-view__conv-more,
+.chat-view__conv:focus-within .chat-view__conv-more,
+.chat-view__conv-more:focus-within .chat-view__conv-more {
   opacity: 1;
 }
 
-.chat-view__conv-del:hover {
+/* 展开时保持可见（el-dropdown 打开态给控件加 class） */
+.chat-view__conv-more.is-open {
+  opacity: 1;
+}
+
+/* 下拉菜单（Gemini 风格：紧凑、圆角、图标对齐） */
+.chat-view__conv-menu {
+  min-width: 128px;
+  padding: 4px;
+  border-radius: var(--radius-lg);
+}
+
+.chat-view__conv-menu .el-dropdown-menu__item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border-radius: 8px;
+  font-size: 13px;
+  line-height: 1.4;
+  color: var(--text-primary);
+}
+
+.chat-view__conv-menu .el-dropdown-menu__item .el-icon {
+  font-size: 15px;
+  color: var(--text-tertiary);
+}
+
+.chat-view__conv-menu .el-dropdown-menu__item:hover {
+  background: color-mix(in srgb, var(--text-primary) 6%, transparent);
+  color: var(--text-primary);
+}
+
+.chat-view__conv-menu .el-dropdown-menu__item:hover .el-icon {
+  color: var(--text-primary);
+}
+
+.chat-view__conv-menu .chat-view__conv-menu-del.el-dropdown-menu__item {
+  color: var(--accent-red);
+}
+
+.chat-view__conv-menu .chat-view__conv-menu-del.el-dropdown-menu__item .el-icon {
+  color: var(--accent-red);
+}
+
+.chat-view__conv-menu .chat-view__conv-menu-del.el-dropdown-menu__item:hover {
+  background: color-mix(in srgb, var(--accent-red) 10%, transparent);
   color: var(--accent-red);
 }
 
@@ -1635,7 +1748,7 @@ onMounted(async () => {
 /* 响应式：窄屏左栏折叠 */
 @media (max-width: 900px) {
   .chat-view__side {
-    width: 180px;
+    width: 220px;
   }
   .chat-view__drawer {
     width: 280px;

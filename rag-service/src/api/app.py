@@ -200,7 +200,7 @@ def create_app(
     if not static_dir.exists():
         static_dir = Path(__file__).resolve().parent.parent.parent / "static"
 
-    if static_dir.exists():
+    if static_dir.exists() and (static_dir / "assets").is_dir():
         app.mount("/assets", StaticFiles(directory=static_dir / "assets"), name="assets")
         app.mount("/", StaticFiles(directory=static_dir, html=True), name="spa")
 

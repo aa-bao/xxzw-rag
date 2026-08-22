@@ -1,0 +1,5 @@
+*
+!wx_video_download
+!config.docker.yaml
+!docker-entrypoint.sh
+!LICENSE

@@ -4,6 +4,7 @@ WORKDIR /opt/tyt-rpa/app
 # Install uv
 COPY --from=ghcr.io/astral-sh/uv:0.7.5 /uv /usr/local/bin/uv
 ENV UV_LINK_MODE=copy
+ENV PATH="/opt/tyt-rpa/app/.venv/bin:$PATH"
 
 # Install Python deps
 COPY pyproject.toml uv.lock ./

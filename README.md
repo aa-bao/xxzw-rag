@@ -4,6 +4,7 @@
 
 - `rag-service/` — Python FastAPI 后端（SQLAlchemy + MySQL + Chroma + 模型中转）
 - `web/` — Vue 3 + TypeScript + Element Plus 前端（Vite，生产由非 root Nginx 提供）
+- `wx-channels/` — 微信视频号下载器 Linux 版（Docker 服务，API `127.0.0.1:2022`）
 - `rpa-application.yaml` — TYT RPA 独立应用清单；资源与副作用见 `RESOURCE.md`
 
 业务术语与产品边界见 [CONTEXT.md](CONTEXT.md)，架构决策见 [docs/adr/](docs/adr/)。
@@ -27,6 +28,7 @@ cp .env.example .env
 | `MODEL_RELAY_BASE_URL` / `MODEL_RELAY_API_KEY` | 模型中转服务地址与密钥 |
 | `EMBEDDING_MODEL` / `CHAT_MODEL` | 嵌入与对话模型名 |
 | `EMBEDDING_BASE_URL` / `EMBEDDING_API_KEY` | 独立嵌入端点（可选，默认复用中转服务） |
+| `WX_CHANNELS_API_BASE_URL` | 微信视频号下载器 API 地址（本地默认 `http://127.0.0.1:2022`，全栈 Compose 自动用内部 `http://wx-channels:2022`） |
 
 ### 2. 数据库迁移
 
@@ -54,6 +56,16 @@ npm run dev
 ```
 
 前端开发服务器默认监听 5173，`/api` 代理到后端 8000。
+
+### 微信视频号解析配置（可选但推荐）
+
+要使用“输入视频号链接解析”，需要给 wx-channels 配置元宝 Cookie：
+
+```powershell
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts/configure-wx-cookie.ps1
+```
+
+详细说明见 [wx-channels/README.md](wx-channels/README.md)。
 
 ## 开发模式：跳过登录
 

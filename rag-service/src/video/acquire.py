@@ -178,7 +178,9 @@ def _parse_weixin_resolved(body: dict[str, object]) -> dict[str, object]:
     """兼容 parse_sph（feedInfo）与 feed/profile（object）两种响应结构。"""
     data = body.get("data")
     if not isinstance(data, dict):
-        raise RuntimeError("视频号解析结果缺少 data")
+        msg = str(body.get("msg") or body.get("message") or "").strip()
+        detail = f"：{msg}" if msg else ""
+        raise RuntimeError(f"视频号解析结果缺少 data{detail}")
     inner = data.get("data")
     if not isinstance(inner, dict):
         inner = {}
@@ -245,6 +247,7 @@ def resolve_weixin_source(source: str, timeout: float) -> dict[str, object]:
     # 兜底走 feed/profile：需要本地浏览器保持一个视频号页面打开。
     candidates.append((WX_CHANNELS_FEED_PROFILE_ENDPOINT, source))
 
+    errors: list[str] = []
     last_error: Exception | None = None
     for endpoint, request_url in candidates:
         try:
@@ -254,8 +257,10 @@ def resolve_weixin_source(source: str, timeout: float) -> dict[str, object]:
             validate_public_url(direct_url)
             return result
         except Exception as exc:  # noqa: BLE001 — 逐个接口尝试，最后统一报错
+            errors.append(str(exc))
             last_error = exc
-    raise RuntimeError(f"视频号解析失败: {last_error}") from last_error
+    detail = "；".join(errors) if errors else "未知错误"
+    raise RuntimeError(f"视频号解析失败: {detail}") from last_error
 
 
 # ── 来源规范化 ──

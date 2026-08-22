@@ -15,6 +15,26 @@ services:
       retries: 30
       start_period: 20s
 
+  wx-channels:
+    platform: linux/amd64
+    build:
+      context: wx-channels
+      dockerfile: Dockerfile
+    environment:
+      WX_VIDEO_HOME: /data
+      WX_CHANNELS_DOWNLOAD_CONFIG_FILEPATH: /data/config.yaml
+    ports:
+      - "127.0.0.1:2022:2022"
+      - "127.0.0.1:2023:2023"
+    volumes:
+      - wxchannels:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2022/"]
+      interval: 10s
+      timeout: 3s
+      retries: 12
+      start_period: 10s
+
   rag:
     build:
       context: rag-service
@@ -31,11 +51,13 @@ services:
       RPA_ENVIRONMENT: LOCAL
       RPA_RELEASE_VERSION: dev
       RPA_SOURCE_COMMIT: local
-      WX_CHANNELS_API_BASE_URL: ${WX_CHANNELS_API_BASE_URL:-http://127.0.0.1:2022}
+      WX_CHANNELS_API_BASE_URL: http://wx-channels:2022
     expose:
       - "8000"
     depends_on:
       mysql:
+        condition: service_healthy
+      wx-channels:
         condition: service_healthy
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/platform/health')"]
@@ -71,3 +93,4 @@ volumes:
   uploads:
   chroma:
   fts:
+  wxchannels:

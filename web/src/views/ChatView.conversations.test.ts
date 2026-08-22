@@ -193,7 +193,27 @@ describe('ChatView conversation logic', () => {
 
     const convs = wrapper.findAll('.chat-view__conv')
     expect(convs).toHaveLength(4)
-    expect(convs[0].find('.chat-view__conv-title').text()).toBe('未命名对话')
+    expect(convs[0].find('.chat-view__conv-title').text()).toBe('hello')
+
+    wrapper.unmount()
+  })
+
+  it('auto-titles an untitled conversation with the first question truncated to 20 chars', async () => {
+    const wrapper = mountChatView()
+    await flushPromises()
+
+    await newConversationBtn(wrapper).trigger('click')
+    await flushPromises()
+    await pickKb(wrapper, '财务制度')
+    await flushPromises()
+    await wrapper.get('textarea').setValue('a'.repeat(25))
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    await new Promise((resolve) => setTimeout(resolve, 1000))
+    await flushPromises()
+
+    const convs = wrapper.findAll('.chat-view__conv')
+    expect(convs[0].find('.chat-view__conv-title').text()).toBe('a'.repeat(20) + '…')
 
     wrapper.unmount()
   })
