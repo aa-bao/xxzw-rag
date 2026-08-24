@@ -1,8 +1,9 @@
 """视频解析 agent 设置模型 + 运行时热更新 + DB 持久化。
 
 配置语义（参照 shared.runtime.RuntimeModelRelay 模式）：
-- ASR 必配：asr_model + 凭证（新版单一 Key，或旧版 App ID + Access Token），
-  独立于系统模型配置；provider 固定 volcengine（火山引擎语音技术）。
+- ASR 双渠道：ASR_PROVIDER 决定渠道（dashscope 百炼 / volcengine 火山）。
+  百炼凭证用 DASHSCOPE_ASR_*（模型 qwen3-asr-flash-filetrans，公网 URL 拉音频），
+  火山凭证用 VOLC_ASR_*（单一 Key 或 App ID + Access Token），两套互不干扰。
 - Chat 可覆盖：chat_base_url / chat_model / chat_api_key 为空 = 复用系统
   model_relay；非空时用视频 agent 独立配置（默认预填豆包方舟）。
 - 问答模型可独立配置 qa_base_url / qa_model / qa_api_key；空字段回退到摘要配置。
@@ -24,6 +25,16 @@ from src.db.repositories import VideoSettingRepository
 ASR_PROVIDER_DEFAULT = "volcengine"
 ASR_MODEL_DEFAULT = os.environ.get("VOLC_ASR_MODEL", "bigmodel")
 ASR_RESOURCE_ID_DEFAULT = os.environ.get("VOLC_ASR_RESOURCE_ID", "volc.bigasr.auc_turbo")
+# provider 别名 → 都走百炼渠道
+DASHSCOPE_ASR_PROVIDERS = {"dashscope", "qwen", "aliyun", "bailian", "aliyun-bailian"}
+# 百炼渠道（dashscope）：提交端点与公网暴露参数
+DASHSCOPE_ASR_ENDPOINT_DEFAULT = "https://dashscope.aliyuncs.com/api/v1/services/audio/asr/transcriptions"
+DASHSCOPE_ASR_MODEL_DEFAULT = "qwen3-asr-flash-filetrans"
+ASR_PUBLIC_PORT_DEFAULT = int(
+    os.environ.get("ASR_PUBLIC_PORT", "")
+    or os.environ.get("VOLC_ASR_PUBLIC_PORT", "18081")
+    or 18081
+)
 FRAMES_DEFAULT = 12
 CHAT_BASE_URL_DEFAULT = os.environ.get("VOLC_CHAT_BASE_URL", "https://ark.cn-beijing.volces.com/api/v3")
 CHAT_MODEL_DEFAULT = os.environ.get("VOLC_CHAT_MODEL", "doubao-seed-2-1-pro-260628")
@@ -56,6 +67,10 @@ class VideoAgentSettings:
     asr_api_key: str = ""
     asr_app_id: str = ""
     asr_access_token: str = ""
+    # 百炼渠道：提交端点（空=默认）、公网主机/端口（百炼需公网 URL 拉取音频）
+    asr_endpoint: str = ""
+    asr_public_host: str = ""
+    asr_public_port: int = ASR_PUBLIC_PORT_DEFAULT
     chat_base_url: str = ""
     chat_model: str = ""
     chat_api_key: str = ""
@@ -68,28 +83,81 @@ class VideoAgentSettings:
 
     @classmethod
     def from_env(cls) -> "VideoAgentSettings":
-        """从项目 .env / 环境变量加载默认配置（用户填写后的初始值）。"""
+        """从项目 .env / 环境变量加载默认配置（用户填写后的初始值）。
+
+        ASR 为双渠道：ASR_PROVIDER 决定当前渠道（dashscope / volcengine），
+        .env 中两套凭证（DASHSCOPE_ASR_* / VOLC_ASR_*）互不干扰，随时可切换。
+        """
         env = os.environ
         watch_env = _read_env_file(Path.home() / ".config" / "watch" / ".env")
+        provider = (
+            env.get("ASR_PROVIDER", "")
+            or env.get("VOLC_ASR_PROVIDER", "")
+            or ASR_PROVIDER_DEFAULT
+        ).strip().lower()
+        is_dashscope = provider in DASHSCOPE_ASR_PROVIDERS
         return cls(
-            asr_provider=env.get("VOLC_ASR_PROVIDER", ASR_PROVIDER_DEFAULT),
-            asr_model=env.get("VOLC_ASR_MODEL", ASR_MODEL_DEFAULT),
+            asr_provider=provider,
+            asr_model=(
+                env.get("DASHSCOPE_ASR_MODEL", DASHSCOPE_ASR_MODEL_DEFAULT).strip()
+                if is_dashscope
+                else env.get("VOLC_ASR_MODEL", ASR_MODEL_DEFAULT).strip()
+            ),
             asr_api_key=(
-                env.get("VOLC_ASR_API_KEY", "").strip()
-                or watch_env.get("VOLC_ASR_API_KEY", "")
+                (
+                    env.get("DASHSCOPE_ASR_API_KEY", "").strip()
+                    or watch_env.get("DASHSCOPE_ASR_API_KEY", "")
+                )
+                if is_dashscope
+                else (
+                    env.get("VOLC_ASR_API_KEY", "").strip()
+                    or watch_env.get("VOLC_ASR_API_KEY", "")
+                )
             ).strip(),
             asr_app_id=(env.get("VOLC_ASR_APP_ID", "") or watch_env.get("VOLC_ASR_APP_ID", "")).strip(),
             asr_access_token=(
                 env.get("VOLC_ASR_ACCESS_TOKEN", "")
                 or watch_env.get("VOLC_ASR_ACCESS_TOKEN", "")
             ).strip(),
-            chat_base_url=env.get("VOLC_CHAT_BASE_URL", CHAT_BASE_URL_DEFAULT).strip(),
-            chat_model=env.get("VOLC_CHAT_MODEL", CHAT_MODEL_DEFAULT).strip(),
-            chat_api_key=env.get("VOLC_CHAT_API_KEY", "").strip(),
-            qa_model=env.get("VOLC_CHAT_QA_MODEL", QA_MODEL_DEFAULT).strip(),
-            qa_base_url=env.get("VOLC_CHAT_QA_BASE_URL", "").strip(),
-            qa_api_key=env.get("VOLC_CHAT_QA_API_KEY", "").strip(),
-            frames=int(env.get("VOLC_VIDEO_FRAMES", str(FRAMES_DEFAULT)) or FRAMES_DEFAULT),
+            asr_endpoint=env.get("DASHSCOPE_ASR_ENDPOINT", "").strip(),
+            asr_public_host=(
+                env.get("ASR_PUBLIC_HOST", "")
+                or env.get("VOLC_ASR_PUBLIC_HOST", "")
+            ).strip(),
+            asr_public_port=int(
+                env.get("ASR_PUBLIC_PORT", "")
+                or env.get("VOLC_ASR_PUBLIC_PORT", "")
+                or ASR_PUBLIC_PORT_DEFAULT
+            ),
+            chat_base_url=(
+                env.get("VIDEO_CHAT_BASE_URL", "").strip()
+                or env.get("VOLC_CHAT_BASE_URL", CHAT_BASE_URL_DEFAULT).strip()
+            ),
+            chat_model=(
+                env.get("VIDEO_CHAT_MODEL", "").strip()
+                or env.get("VOLC_CHAT_MODEL", CHAT_MODEL_DEFAULT).strip()
+            ),
+            chat_api_key=(
+                env.get("VIDEO_CHAT_API_KEY", "").strip()
+                or env.get("VOLC_CHAT_API_KEY", "").strip()
+            ),
+            qa_model=(
+                env.get("VIDEO_CHAT_QA_MODEL", "").strip()
+                or env.get("VOLC_CHAT_QA_MODEL", QA_MODEL_DEFAULT).strip()
+            ),
+            qa_base_url=(
+                env.get("VIDEO_CHAT_QA_BASE_URL", "").strip()
+                or env.get("VOLC_CHAT_QA_BASE_URL", "").strip()
+            ),
+            qa_api_key=(
+                env.get("VIDEO_CHAT_QA_API_KEY", "").strip()
+                or env.get("VOLC_CHAT_QA_API_KEY", "").strip()
+            ),
+            frames=int(
+                env.get("VIDEO_FRAMES", "")
+                or env.get("VOLC_VIDEO_FRAMES", str(FRAMES_DEFAULT))
+                or FRAMES_DEFAULT
+            ),
         )
 
     @classmethod
@@ -101,6 +169,16 @@ class VideoAgentSettings:
             asr_api_key=row.asr_api_key or "",
             asr_app_id=row.asr_app_id or "",
             asr_access_token=row.asr_access_token or "",
+            asr_endpoint=os.environ.get("DASHSCOPE_ASR_ENDPOINT", "").strip(),
+            asr_public_host=(
+                os.environ.get("ASR_PUBLIC_HOST", "")
+                or os.environ.get("VOLC_ASR_PUBLIC_HOST", "")
+            ).strip(),
+            asr_public_port=int(
+                os.environ.get("ASR_PUBLIC_PORT", "")
+                or os.environ.get("VOLC_ASR_PUBLIC_PORT", "")
+                or ASR_PUBLIC_PORT_DEFAULT
+            ),
             chat_base_url=row.chat_base_url or "",
             chat_model=row.chat_model or "",
             chat_api_key=row.chat_api_key or "",
@@ -118,6 +196,8 @@ class VideoAgentSettings:
             "asr_provider": self.asr_provider,
             "asr_model": self.asr_model,
             "asr_resource_id": ASR_RESOURCE_ID_DEFAULT,
+            "asr_endpoint": self.asr_endpoint or DASHSCOPE_ASR_ENDPOINT_DEFAULT,
+            "has_asr_public_host": bool(self.asr_public_host),
             "has_asr_api_key": bool(self.asr_api_key),
             "has_asr_app_id": bool(self.asr_app_id),
             "has_asr_access_token": bool(self.asr_access_token),
