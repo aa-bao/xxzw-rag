@@ -1,14 +1,18 @@
 FROM python:3.12-slim
 WORKDIR /opt/tyt-rpa/app
 
-# Install uv
-COPY --from=ghcr.io/astral-sh/uv:0.7.5 /uv /usr/local/bin/uv
+# Install uv from PyPI (avoid ghcr.io pull issue on some networks)
+# Use Tencent PyPI mirror (Tencent Cloud server) and longer HTTP timeout
+ENV PIP_INDEX_URL=https://mirrors.cloud.tencent.com/pypi/simple
+ENV UV_DEFAULT_INDEX=https://mirrors.cloud.tencent.com/pypi/simple
+ENV UV_HTTP_TIMEOUT=600
+RUN pip install --no-cache-dir uv==0.7.5
 ENV UV_LINK_MODE=copy
-ENV PATH="/opt/tyt-rpa/app/.venv/bin:$PATH"
 
 # Install Python deps
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev
+ENV PATH="/opt/tyt-rpa/app/.venv/bin:$PATH"
 
 # Copy source and entrypoint
 COPY . ./
