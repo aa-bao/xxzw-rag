@@ -791,3 +791,209 @@ def acquire_url_audio(
                 f"原始错误：{message}"
             )
         raise AcquisitionError(message) from primary_error
+
+
+# ── 图文 / 社交媒体内容探测与下载（抖音图文、小红书视频/图文） ──
+#
+# 说明：
+# - 先通过 yt-dlp --dump-single-json 探测帖子是视频还是图文
+# - 图文帖子尽量从 info.images / image_urls / entries[].images / thumbnails 收集原图
+# - 图片下载带平台 Referer 与本地 cookies.txt，提高成功率
+
+_IMAGE_EXT_RE = re.compile(r"\.(?:jpg|jpeg|png|webp|gif)(?:$|\?)", re.I)
+
+
+def probe_media_info(
+    source: str,
+    timeout: float,
+    *,
+    referer: str | None = None,
+    cookies: Path | None = None,
+    cookies_from_browser: str | None = None,
+    no_proxy: bool = False,
+) -> dict[str, object]:
+    """运行 yt-dlp 单 JSON 探测，不下载媒体，返回 info dict。"""
+    command = [sys.executable, "-m", "yt_dlp", "--dump-single-json", "--skip-download", "--no-playlist", "--no-warnings", "--ignore-no-formats-error"]
+    if cookies:
+        command.extend(["--cookies", str(cookies)])
+    elif cookies_from_browser:
+        command.extend(["--cookies-from-browser", cookies_from_browser])
+    if referer:
+        command.extend(["--add-header", f"Referer:{referer}"])
+    if no_proxy:
+        command.extend(["--proxy", ""])
+    command.append(source)
+    result = run_command(command, timeout)
+    if result.returncode != 0:
+        message = result.stderr.strip() or "yt-dlp probe failed"
+        if "No module named yt_dlp" in message:
+            raise DependencyError("yt-dlp is not installed")
+        raise RuntimeError(message)
+    return json.loads(result.stdout or "{}")
+
+
+def _url_from_obj(obj: object) -> str:
+    if isinstance(obj, str):
+        return obj.strip()
+    if isinstance(obj, dict):
+        return str(obj.get("url") or obj.get("src") or "").strip()
+    return ""
+
+
+def _collect_image_urls(info: dict) -> list[str]:
+    """从 yt-dlp info / entries / thumbnails 中收集图片 URL。"""
+    urls: list[str] = []
+
+    def add(url: str) -> None:
+        url = url.strip()
+        if url and url.startswith("http") and url not in urls:
+            urls.append(url)
+
+    for key in ("images", "image_urls"):
+        value = info.get(key)
+        if isinstance(value, list):
+            for item in value:
+                add(_url_from_obj(item))
+        elif isinstance(value, dict):
+            add(_url_from_obj(value))
+
+    if info.get("url") and _IMAGE_EXT_RE.search(str(info.get("url"))):
+        add(str(info["url"]))
+
+    entries = info.get("entries")
+    if isinstance(entries, list):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            for key in ("images", "image_urls"):
+                value = entry.get(key)
+                if isinstance(value, list):
+                    for item in value:
+                        add(_url_from_obj(item))
+            if entry.get("url") and _IMAGE_EXT_RE.search(str(entry.get("url"))):
+                add(str(entry["url"]))
+            thumbs = entry.get("thumbnails")
+            if isinstance(thumbs, list):
+                for t in thumbs:
+                    add(_url_from_obj(t))
+
+    # 主条目 thumbnails 作为兜底（过滤掉视频播放器封面可用原图）
+    thumbnails = info.get("thumbnails")
+    if isinstance(thumbnails, list) and not urls:
+        for t in thumbnails:
+            add(_url_from_obj(t))
+
+    return urls
+
+
+def classify_media_type(info: dict) -> str:
+    """从 yt-dlp info 判定：video / image_text / unknown。"""
+    formats = info.get("formats")
+    if isinstance(formats, list):
+        for fmt in formats:
+            if isinstance(fmt, dict) and fmt.get("vcodec") and str(fmt.get("vcodec")) != "none":
+                return "video"
+    entries = info.get("entries")
+    if isinstance(entries, list) and entries:
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            if isinstance(entry.get("formats"), list):
+                for fmt in entry["formats"]:
+                    if isinstance(fmt, dict) and fmt.get("vcodec") and str(fmt.get("vcodec")) != "none":
+                        return "video"
+        if _collect_image_urls(info):
+            return "image_text"
+    if _collect_image_urls(info):
+        return "image_text"
+    if info.get("vcodec") and str(info.get("vcodec")) != "none":
+        return "video"
+    return "unknown"
+
+
+def extract_image_post_meta(info: dict) -> dict[str, object]:
+    """从 yt-dlp info 提取图文帖元信息。"""
+    title = str(info.get("title") or "").strip()
+    description = str(info.get("description") or "").strip()
+    author = str(info.get("uploader") or info.get("creator") or info.get("author") or "").strip()
+    hashtags: list[str] = list(info.get("tags") or []) if isinstance(info.get("tags"), list) else []
+    # 从标题/描述里兜底解析 #tag
+    if not hashtags:
+        hashtags = re.findall(r"#([\w\u4e00-\u9fa5]+)", title + " " + description)
+    publish_time = ""
+    if info.get("timestamp"):
+        from datetime import UTC, datetime
+
+        publish_time = datetime.fromtimestamp(float(info["timestamp"]), tz=UTC).isoformat(timespec="seconds")
+    elif info.get("upload_date"):
+        raw = str(info["upload_date"])
+        if len(raw) == 8:
+            publish_time = f"{raw[0:4]}-{raw[4:6]}-{raw[6:8]}"
+    return {
+        "title": title,
+        "post_text": description or title,
+        "author": author,
+        "hashtags": hashtags,
+        "publish_time": publish_time,
+    }
+
+
+def _cookie_header_for_url(cookie_file: Path | None, url: str) -> str:
+    if cookie_file is None or not cookie_file.is_file():
+        return ""
+    try:
+        lines = cookie_file.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return ""
+    pairs: list[str] = []
+    for line in lines:
+        line = line.strip()
+        if not line or line.startswith("#") or "\t" not in line:
+            continue
+        parts = line.split("\t")
+        if len(parts) >= 7:
+            pairs.append(f"{parts[5]}={parts[6]}")
+    return "; ".join(pairs)
+
+
+def download_image_post(
+    source: str,
+    info: dict,
+    out_dir: Path,
+    timeout: float,
+    *,
+    referer: str | None = None,
+    cookies: Path | None = None,
+) -> list[dict[str, object]]:
+    """下载图文帖所有图片到 out_dir，返回 [{path, name}]。"""
+    import urllib.request
+
+    out_dir.mkdir(parents=True, exist_ok=True)
+    urls = _collect_image_urls(info)
+    if not urls:
+        raise RuntimeError("未从图文帖子中提取到图片 URL")
+    cookies_header = _cookie_header_for_url(cookies, source)
+    results: list[dict[str, object]] = []
+    for idx, url in enumerate(urls[:50], start=1):
+        name = f"img_{idx:02d}.jpg"
+        path = out_dir / name
+        try:
+            headers = {"User-Agent": BROWSER_USER_AGENT}
+            if referer:
+                headers["Referer"] = referer
+            if cookies_header:
+                headers["Cookie"] = cookies_header
+            request = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(request, timeout=max(5.0, timeout)) as resp:
+                data = resp.read()
+            if not data:
+                continue
+            path.write_bytes(data)
+            results.append({"path": str(path), "name": name, "url": url})
+        except Exception as exc:  # noqa: BLE001 — 单张失败不阻断整组
+            import logging
+
+            logging.getLogger(__name__).warning("download image failed %s: %s", url, exc)
+    if not results:
+        raise RuntimeError("图文图片下载失败，请检查 Cookie/网络")
+    return results

@@ -16,9 +16,18 @@ export interface VideoTask {
   transcript: string | null
   keyframes: Array<{ path: string; timestamp_seconds: number }>
   cost: Record<string, unknown> | null
+  video_path?: string | null
+  audio_path?: string | null
   summary: VideoSummary | null
   frames_requested?: number
   transcript_source?: string | null
+  content_type?: 'auto' | 'video' | 'image_text' | 'unknown'
+  post_text?: string | null
+  author?: string | null
+  hashtags?: string[] | null
+  publish_time?: string | null
+  post_images?: Array<{ path: string; name?: string; url?: string }>
+  image_captions?: Record<string, string> | null
   events?: VideoPipelineEvent[]
   qa_history?: VideoQaMessage[]
 }
@@ -48,6 +57,7 @@ export interface VideoSummary {
   keypoints?: string[]
   visual_notes?: string[]
   keyframe_captions?: Record<string, string>
+  image_captions?: Record<string, string>
   mode?: string
 }
 
@@ -56,9 +66,9 @@ export interface SubmitResult {
   status: string
 }
 
-/** 提交 URL 解析任务 */
-export async function submitUrlTask(source: string, frames = 12): Promise<VideoTask> {
-  const resp = await client.post<VideoTask>('/video/tasks', { source, kind: 'url', frames })
+/** 提交 URL 解析任务（content_type: auto | video | image_text） */
+export async function submitUrlTask(source: string, frames = 12, content_type = 'auto'): Promise<VideoTask> {
+  const resp = await client.post<VideoTask>('/video/tasks', { source, kind: 'url', frames, content_type })
   return resp.data
 }
 
@@ -225,9 +235,26 @@ export function frameUrl(taskId: string, name: string): string {
   return applicationUrl('/api/video/tasks/' + taskId + '/frames/' + name)
 }
 
+/** 图文帖子图片 URL */
+export function postImageUrl(taskId: string, name: string): string {
+  return applicationUrl('/api/video/tasks/' + taskId + '/images/' + name)
+}
+
 /** HTML 报告 URL */
 export function reportUrl(taskId: string): string {
   return applicationUrl('/api/video/tasks/' + taskId + '/report.html')
+}
+
+/** 可播放视频 URL（后端已持久化低码率副本 / 本地上传文件） */
+export function taskVideoUrl(taskId: string, download = false): string {
+  const url = applicationUrl('/api/video/tasks/' + taskId + '/video')
+  return download ? url + '?download=1' : url
+}
+
+/** 音频产物 URL */
+export function taskAudioUrl(taskId: string, download = false): string {
+  const url = applicationUrl('/api/video/tasks/' + taskId + '/audio')
+  return download ? url + '?download=1' : url
 }
 
 /** 视频 Agent 头像 URL（后端静态资源） */

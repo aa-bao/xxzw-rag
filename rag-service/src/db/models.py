@@ -4,9 +4,11 @@ from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     CheckConstraint,
     DateTime,
+    Float,
     ForeignKey,
     ForeignKeyConstraint,
     Index,
@@ -80,6 +82,52 @@ class VideoSetting(Base):
         server_default=CURRENT_TIMESTAMP,
         server_onupdate=CURRENT_TIMESTAMP,
     )
+
+
+class VideoTaskRecord(Base):
+    """视频解析任务与分析结果持久化（文件系统状态 JSON 的 MySQL 镜像）。
+
+    文件系统仍是运行时的实时状态源；MySQL 用于存档、检索与跨任务统计。
+    JSON 字段直接存储结构化结果（summary/report/keyframes/events/qa_history）。
+    """
+
+    __tablename__ = "rag_video_task"
+    __table_args__ = (
+        Index("idx_video_task_created", "created_at"),
+        Index("idx_video_task_status", "status"),
+        Index("idx_video_task_kind", "kind"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    task_id: Mapped[str] = mapped_column(String(36), nullable=False, unique=True)
+    source: Mapped[str] = mapped_column(String(2000), nullable=False)
+    kind: Mapped[str] = mapped_column(String(20), nullable=False)
+    status: Mapped[str] = mapped_column(String(20), nullable=False)
+    stage: Mapped[str | None] = mapped_column(String(50))
+    created_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(DateTime, nullable=False)
+    output_dir: Mapped[str | None] = mapped_column(String(1000))
+    error: Mapped[str | None] = mapped_column(Text)
+    frames_requested: Mapped[int | None] = mapped_column(Integer)
+    transcript_source: Mapped[str | None] = mapped_column(String(200))
+    duration_seconds: Mapped[float | None] = mapped_column(Float)
+    transcript: Mapped[str | None] = mapped_column(Text)
+    summary: Mapped[dict | None] = mapped_column(JSON)
+    report: Mapped[dict | None] = mapped_column(JSON)
+    keyframes: Mapped[list | None] = mapped_column(JSON)
+    cost: Mapped[dict | None] = mapped_column(JSON)
+    events: Mapped[list | None] = mapped_column(JSON)
+    qa_history: Mapped[list | None] = mapped_column(JSON)
+    video_path: Mapped[str | None] = mapped_column(String(1000))
+    audio_path: Mapped[str | None] = mapped_column(String(1000))
+    content_type: Mapped[str] = mapped_column(String(20), nullable=False, server_default=text("'video'"))
+    # 图文帖子：正文/作者/标签/发布时间/图片列表
+    post_text: Mapped[str | None] = mapped_column(Text)
+    author: Mapped[str | None] = mapped_column(String(200))
+    hashtags: Mapped[list | None] = mapped_column(JSON)
+    publish_time: Mapped[str | None] = mapped_column(String(100))
+    post_images: Mapped[list | None] = mapped_column(JSON)
+    image_captions: Mapped[dict | None] = mapped_column(JSON)
 
 
 class User(Base):

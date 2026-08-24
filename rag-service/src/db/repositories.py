@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+from typing import Any
+
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from src.db.models import KnowledgeBase, ModelSetting, User, VideoSetting
+from src.db.models import KnowledgeBase, ModelSetting, User, VideoSetting, VideoTaskRecord
 from src.shared.errors import AppError
 
 
@@ -204,4 +207,135 @@ class VideoSettingRepository:
             setting.qa_api_key = str(values.get("qa_api_key") or "")
             setting.frames = int(values["frames"])
         await self._session.commit()
+
+
+def _parse_dt(value: Any) -> datetime | None:
+    if isinstance(value, datetime):
+        return value
+    if not value:
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        if dt.tzinfo is not None:
+            dt = dt.astimezone(UTC).replace(tzinfo=None)
+        return dt
+    except ValueError:
+        return None
+
+
+class VideoTaskRepository:
+    """视频解析任务结果持久化：以 task_id 为业务唯一键的 upsert。"""
+
+    def __init__(self, session: AsyncSession) -> None:
+        self._session = session
+
+    def _row_values(self, state: dict[str, Any]) -> dict[str, Any]:
+        report = state.get("report") if isinstance(state.get("report"), dict) else {}
+        duration = report.get("duration_seconds") if report else None
+        if not isinstance(duration, (int, float)):
+            duration = state.get("duration_seconds")
+        if not isinstance(duration, (int, float)):
+            duration = None
+
+        created = _parse_dt(state.get("created_at"))
+        updated = _parse_dt(state.get("updated_at"))
+        now = datetime.now(UTC).replace(tzinfo=None)
+        return {
+            "task_id": str(state.get("task_id") or ""),
+            "source": str(state.get("source") or ""),
+            "kind": str(state.get("kind") or "url"),
+            "status": str(state.get("status") or "submitted"),
+            "stage": state.get("stage") or None,
+            "created_at": created or now,
+            "updated_at": updated or now,
+            "output_dir": state.get("output_dir") or None,
+            "error": state.get("error") or None,
+            "frames_requested": state.get("frames_requested"),
+            "transcript_source": state.get("transcript_source") or None,
+            "duration_seconds": float(duration) if duration is not None else None,
+            "transcript": state.get("transcript") or None,
+            "summary": state.get("summary") if isinstance(state.get("summary"), dict) else None,
+            "report": report or None,
+            "keyframes": state.get("keyframes") if isinstance(state.get("keyframes"), list) else None,
+            "cost": state.get("cost") if isinstance(state.get("cost"), dict) else None,
+            "events": state.get("events") if isinstance(state.get("events"), list) else None,
+            "qa_history": state.get("qa_history") if isinstance(state.get("qa_history"), list) else None,
+            "video_path": state.get("video_path") or None,
+            "audio_path": state.get("audio_path") or None,
+            "content_type": str(state.get("content_type") or "video"),
+            "post_text": state.get("post_text") or None,
+            "author": state.get("author") or None,
+            "hashtags": state.get("hashtags") if isinstance(state.get("hashtags"), list) else None,
+            "publish_time": state.get("publish_time") or None,
+            "post_images": state.get("post_images") if isinstance(state.get("post_images"), list) else None,
+            "image_captions": state.get("image_captions") if isinstance(state.get("image_captions"), dict) else None,
+        }
+
+    async def upsert_state(self, state: dict[str, Any]) -> None:
+        values = self._row_values(state)
+        if not values["task_id"]:
+            return
+        record = await self._session.scalar(
+            select(VideoTaskRecord).where(VideoTaskRecord.task_id == values["task_id"])
+        )
+        if record is None:
+            self._session.add(VideoTaskRecord(**values))
+        else:
+            for key, value in values.items():
+                if key != "task_id":
+                    setattr(record, key, value)
+        await self._session.commit()
+
+    @staticmethod
+    def record_to_state(record: VideoTaskRecord) -> dict[str, Any]:
+        return {
+            "task_id": record.task_id,
+            "source": record.source,
+            "kind": record.kind,
+            "status": record.status,
+            "stage": record.stage,
+            "created_at": record.created_at.isoformat() if record.created_at else None,
+            "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+            "output_dir": record.output_dir,
+            "error": record.error,
+            "frames_requested": record.frames_requested,
+            "transcript_source": record.transcript_source,
+            "transcript": record.transcript,
+            "summary": record.summary,
+            "report": record.report,
+            "keyframes": record.keyframes,
+            "cost": record.cost,
+            "events": record.events,
+            "qa_history": record.qa_history,
+            "video_path": record.video_path,
+            "audio_path": record.audio_path,
+            "content_type": record.content_type or "video",
+            "post_text": record.post_text,
+            "author": record.author,
+            "hashtags": record.hashtags,
+            "publish_time": record.publish_time,
+            "post_images": record.post_images,
+            "image_captions": record.image_captions,
+            "cache_manifest": None,
+            "pid": None,
+        }
+
+    async def get(self, task_id: str) -> VideoTaskRecord | None:
+        return await self._session.scalar(
+            select(VideoTaskRecord).where(VideoTaskRecord.task_id == task_id)
+        )
+
+    async def list(self, limit: int = 100) -> list[VideoTaskRecord]:
+        result = await self._session.execute(
+            select(VideoTaskRecord)
+            .order_by(VideoTaskRecord.created_at.desc())
+            .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def delete(self, task_id: str) -> None:
+        record = await self.get(task_id)
+        if record is not None:
+            await self._session.delete(record)
+            await self._session.commit()
 

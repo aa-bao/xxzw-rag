@@ -212,20 +212,9 @@ class VideoAgentSettingsService:
                 row = await VideoSettingRepository(session).get()
             if row is not None:
                 restored = VideoAgentSettings.from_row(row)
-                # 空串字段（未保存过）回落 .env 默认，保证开箱即用
+                # 已保存过配置：chat/qa 空串 = 复用系统 model_relay，保留空值不回落。
+                # 只有 ASR 凭证为空时用 .env 默认，保证开箱即用。
                 defaults = VideoAgentSettings.from_env()
-                if not restored.chat_base_url:
-                    restored.chat_base_url = defaults.chat_base_url
-                if not restored.chat_model:
-                    restored.chat_model = defaults.chat_model
-                if not restored.chat_api_key:
-                    restored.chat_api_key = defaults.chat_api_key
-                if not restored.qa_model:
-                    restored.qa_model = defaults.qa_model
-                if not restored.qa_base_url:
-                    restored.qa_base_url = defaults.qa_base_url
-                if not restored.qa_api_key:
-                    restored.qa_api_key = defaults.qa_api_key
                 if not restored.asr_api_key and not restored.asr_app_id:
                     restored.asr_api_key = defaults.asr_api_key
                     restored.asr_app_id = defaults.asr_app_id

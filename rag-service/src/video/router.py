@@ -7,6 +7,8 @@
   GET    /api/video/tasks/{id}        任务状态与结果（含 summary）
   DELETE /api/video/tasks/{id}        删除任务（保留磁盘文件，仅清状态）
   GET    /api/video/tasks/{id}/frames/{name}  关键帧图片
+  GET    /api/video/tasks/{id}/video          可播放视频（低码率副本/本地上传）
+  GET    /api/video/tasks/{id}/audio          音频产物
   GET    /api/video/tasks/{id}/report.html    渲染后的 HTML 报告（缺失时实时渲染）
   POST   /api/video/tasks/{id}/qa     基于转录问答（视频 Chat 配置，回退系统 model_relay）
   GET    /api/video/settings          读取视频 agent 设置（密钥只给 has_*）
@@ -19,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import mimetypes
 import re
 from pathlib import Path
 
@@ -27,6 +30,7 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_permission, require_user
+from src.db.repositories import VideoTaskRepository
 from src.platform.principal import PERMISSION_SETTINGS_MANAGE, ProjectPrincipal
 from src.shared.errors import AppError
 from src.video import asr as video_asr
@@ -47,6 +51,7 @@ class SubmitTaskRequest(BaseModel):
     source: str = Field(min_length=1, max_length=2000)
     kind: str = Field(default="url", pattern="^(url|file)$")
     frames: int = Field(default=12, ge=0, le=48)
+    content_type: str = Field(default="auto", pattern="^(auto|video|image_text)$")
 
 
 class QaRequest(BaseModel):
@@ -106,6 +111,34 @@ def _safe_frame_name(name: str) -> str:
     return name
 
 
+def _extract_url_from_share_text(text: str) -> str:
+    """从分享文案中提取第一个 http(s) 链接；没有链接时原样返回。"""
+    value = (text or "").strip()
+    match = re.search(r"https?://[^\s]+", value)
+    if not match:
+        return value
+    return re.sub(r"[),.;!?，。；：！？、）》】\"'”’]+$", "", match.group(0))
+
+
+def _task_media_path(state: dict, key: str, output_suffixes: tuple[str, ...]) -> Path | None:
+    """在任务状态/输出目录中定位视频或音频文件（兼容历史任务）。"""
+    raw = state.get(key)
+    if raw:
+        p = Path(str(raw)).expanduser()
+        if not p.is_absolute() and state.get("output_dir"):
+            p = Path(str(state["output_dir"])) / p
+        if p.is_file():
+            return p
+    output_dir = state.get("output_dir")
+    if output_dir:
+        output = Path(str(output_dir))
+        for suffix in output_suffixes:
+            for p in output.glob(f"*{suffix}"):
+                if p.is_file():
+                    return p
+    return None
+
+
 # ── QA 上下文构建 ──
 
 def _qa_context_text(state: dict) -> str:
@@ -118,6 +151,16 @@ def _qa_context_text(state: dict) -> str:
     parts: list[str] = []
     if transcript.strip():
         parts.append("【完整转录（带时间戳）】\n" + transcript[:_TRANSCRIPT_LIMIT_QA])
+    # 图文帖：正文/作者/标签/发布时间
+    if state.get("post_text"):
+        parts.append("【图文正文】\n" + str(state["post_text"])[:_TRANSCRIPT_LIMIT_QA])
+    if state.get("author"):
+        parts.append(f"【作者】\n{state['author']}")
+    hashtags = state.get("hashtags") or []
+    if isinstance(hashtags, list) and hashtags:
+        parts.append("【话题标签】\n" + " ".join(f"#{h}" for h in hashtags))
+    if state.get("publish_time"):
+        parts.append(f"【发布时间】\n{state['publish_time']}")
     if summary.get("summary"):
         parts.append("【摘要】\n" + str(summary["summary"]))
     keypoints = summary.get("keypoints") or []
@@ -132,14 +175,20 @@ def _qa_context_text(state: dict) -> str:
             "【关键帧画面说明】\n"
             + "\n".join(f"- [{ts}] {cap}" for ts, cap in captions.items())
         )
+    image_captions = summary.get("image_captions") or {}
+    if isinstance(image_captions, dict) and image_captions:
+        parts.append(
+            "【帖子图片说明】\n"
+            + "\n".join(f"- {key}: {cap}" for key, cap in image_captions.items())
+        )
     return "\n\n".join(parts)
 
 
 def _qa_system_prompt() -> str:
     return (
-        "你是视频解析助手。以下是某个视频的真实内容：完整转录（带 [MM:SS] 时间戳）、"
-        "摘要要点以及可用的画面说明。请只依据这些内容回答用户的问题："
-        "回答中引用时间戳 [MM:SS] 说明出处；区分「转录提到」和「画面中看到」；"
+        "你是内容解析助手。以下是某个视频/图文帖的真实内容：转录（带 [MM:SS] 时间戳）、"
+        "摘要要点、图文正文以及可用的画面/图片说明。请只依据这些内容回答用户的问题："
+        "回答中引用时间戳 [MM:SS] 或图片序号说明出处；区分「文字提到」和「画面/图片中看到」；"
         "内容中没有依据时明确说明，不要编造。"
         "回答要简洁：普通问题控制在 300 字以内，需要分点时才使用短列表，不要展开无关内容。"
     )
@@ -152,6 +201,7 @@ def _build_qa_messages(
     *,
     with_images: bool = False,
     keyframes: list[dict] | None = None,
+    images: list[dict] | None = None,
 ) -> list[dict]:
     messages: list[dict] = [
         {"role": "system", "content": _qa_system_prompt() + "\n\n" + context}
@@ -160,11 +210,14 @@ def _build_qa_messages(
     for item in history[-12:]:
         role = "user" if item.get("role") == "user" else "assistant"
         messages.append({"role": role, "content": str(item.get("content") or "")})
-    # 当前问题：必要时带上关键帧图片（多模态通道）
+    # 当前问题：必要时带上图片（关键帧 或 图文帖子原图）
     if with_images:
         content: list[dict] = [{"type": "text", "text": question}]
-        for kf in (keyframes or [])[:4]:
-            path = str(kf.get("path") or "")
+        image_items = images or []
+        if not image_items:
+            image_items = [{**kf, "path": str(kf.get("path") or "")} for kf in (keyframes or [])[:4]]
+        for img in image_items[:8]:
+            path = str(img.get("path") or "")
             if not path:
                 continue
             import base64
@@ -202,6 +255,9 @@ async def submit_task(
     """提交解析任务并立即开始后台执行。"""
     manager = _manager(request)
     source = body.source.strip()
+    if body.kind == "url":
+        # 分享文案通常夹带中文说明，自动提取其中的 http(s) 链接
+        source = _extract_url_from_share_text(source)
 
     if body.kind == "file":
         p = Path(source).expanduser()
@@ -211,8 +267,14 @@ async def submit_task(
         if not (source.startswith("http://") or source.startswith("https://")):
             raise AppError("VIDEO_BAD_URL", "仅支持 http/https 视频链接", status_code=400)
 
-    state = manager.submit(source, kind=body.kind, frames=body.frames)
-    manager.start_background(state["task_id"], source, frames=body.frames, kind=body.kind)
+    state = manager.submit(
+        source, kind=body.kind, frames=body.frames, content_type=body.content_type
+    )
+    await manager.persist_to_db(state)
+    manager.start_background(
+        state["task_id"], source, frames=body.frames, kind=body.kind,
+        content_type=body.content_type,
+    )
     return {"success": True, "data": state}
 
 
@@ -463,6 +525,18 @@ async def list_tasks(
 ) -> dict[str, object]:
     manager = _manager(request)
     tasks = manager.list_tasks(limit=100)
+    seen = {str(t.get("task_id")) for t in tasks}
+    # 文件状态缺失的任务（如已删除状态文件但 MySQL 仍有存档）从 DB 补回
+    try:
+        async with request.app.state.session_factory() as session:
+            records = await VideoTaskRepository(session).list(limit=200)
+        for record in records:
+            if record.task_id not in seen:
+                tasks.append(VideoTaskRepository.record_to_state(record))
+                seen.add(record.task_id)
+    except Exception:
+        # DB 不可用时保持纯文件列表
+        pass
     return {"success": True, "data": tasks}
 
 
@@ -474,6 +548,15 @@ async def get_task(
 ) -> dict[str, object]:
     manager = _manager(request)
     state = manager.get(task_id)
+    if state is None:
+        # 文件状态缺失时从 MySQL 归档读取
+        try:
+            async with request.app.state.session_factory() as session:
+                record = await VideoTaskRepository(session).get(task_id)
+            if record is not None:
+                state = VideoTaskRepository.record_to_state(record)
+        except Exception:
+            pass
     if state is None:
         raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
     return {"success": True, "data": state}
@@ -513,6 +596,7 @@ async def delete_task(
     path = manager._state_path(task_id)
     path.unlink(missing_ok=True)
     manager._close_event_stream(task_id)
+    await manager.delete_from_db(task_id)
     return {"success": True, "data": None}
 
 
@@ -586,6 +670,87 @@ async def get_frame(
     return FileResponse(str(frame_path), media_type="image/jpeg")
 
 
+@router.get("/tasks/{task_id}/images/{name}")
+async def get_post_image(
+    task_id: str,
+    name: str,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> FileResponse:
+    """返回图文任务的帖子原图。"""
+    manager = _manager(request)
+    safe = _safe_frame_name(name)
+    state = manager.get(task_id)
+    if state is None:
+        raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
+    image_path: Path | None = None
+    output_dir = state.get("output_dir")
+    if output_dir:
+        candidate = Path(output_dir) / "images" / safe
+        if candidate.exists():
+            image_path = candidate
+    if image_path is None:
+        for img in state.get("post_images") or []:
+            p = Path(str(img.get("path") or ""))
+            if p.name == safe and p.exists():
+                image_path = p
+                break
+    if image_path is None:
+        raise AppError("VIDEO_IMAGE_NOT_FOUND", "图片不存在", status_code=404)
+    return FileResponse(str(image_path), media_type="image/jpeg")
+
+
+@router.get("/tasks/{task_id}/video")
+async def get_task_video(
+    task_id: str,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> FileResponse:
+    """返回任务可播放视频（低码率持久化副本 / 本地上传文件）。"""
+    manager = _manager(request)
+    state = manager.get(task_id)
+    if state is None:
+        raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
+    video_path = _task_media_path(state, "video_path", (".mp4", ".webm", ".mov", ".mkv", ".m4v"))
+    if video_path is None and state.get("kind") == "file":
+        # 兼容历史本地文件任务：源文件仍然存在时可直接播放
+        candidate = Path(str(state.get("source") or "")).expanduser()
+        if candidate.is_file() and candidate.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}:
+            video_path = candidate
+    if video_path is None:
+        raise AppError("VIDEO_FILE_NOT_FOUND", "任务还没有可播放的视频", status_code=404)
+    is_download = request.query_params.get("download") == "1"
+    return FileResponse(
+        str(video_path),
+        media_type=mimetypes.guess_type(video_path.name)[0] or "application/octet-stream",
+        filename=video_path.name,
+        content_disposition_type="attachment" if is_download else "inline",
+    )
+
+
+@router.get("/tasks/{task_id}/audio")
+async def get_task_audio(
+    task_id: str,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_user),
+) -> FileResponse:
+    """返回任务音频产物（mp3），供右侧媒体面板预览/下载。"""
+    manager = _manager(request)
+    state = manager.get(task_id)
+    if state is None:
+        raise AppError("VIDEO_TASK_NOT_FOUND", "任务不存在", status_code=404)
+    audio_path = _task_media_path(state, "audio_path", (".mp3", ".m4a", ".aac"))
+    if audio_path is None:
+        raise AppError("VIDEO_AUDIO_NOT_FOUND", "任务还没有音频产物", status_code=404)
+    is_download = request.query_params.get("download") == "1"
+    return FileResponse(
+        str(audio_path),
+        media_type="audio/mpeg",
+        filename=audio_path.name,
+        content_disposition_type="attachment" if is_download else "inline",
+    )
+
+
 @router.get("/tasks/{task_id}/report.html")
 async def get_report_html(
     task_id: str,
@@ -645,7 +810,7 @@ def _require_complete_task(manager, task_id: str) -> dict:
     if state.get("status") != STATUS_COMPLETE:
         raise AppError("VIDEO_NOT_READY", "任务尚未完成，暂不能问答", status_code=409)
     transcript = state.get("transcript") or ""
-    if not transcript.strip():
+    if not transcript.strip() and state.get("content_type") != "image_text":
         raise AppError("VIDEO_NO_TRANSCRIPT", "该任务没有可用转录", status_code=422)
     return state
 
@@ -664,13 +829,16 @@ async def ask_question(
     history = manager.get_qa_history(task_id)
     context = _qa_context_text(state)
     keyframes = state.get("keyframes") or []
-    with_images = (settings.qa_configured or settings.chat_configured) and bool(keyframes)
+    post_images = state.get("post_images") or []
+    is_image_text = state.get("content_type") == "image_text"
+    with_images = bool(post_images) if is_image_text else ((settings.qa_configured or settings.chat_configured) and bool(keyframes))
     messages = _build_qa_messages(
         context,
         history,
         body.question,
         with_images=with_images,
         keyframes=keyframes,
+        images=post_images if is_image_text else None,
     )
 
     chat_client, owns = make_chat_client(
@@ -697,6 +865,7 @@ async def ask_question(
             await chat_client._client.aclose()
     manager.append_qa_message(task_id, "user", body.question)
     manager.append_qa_message(task_id, "assistant", answer)
+    await manager.persist_to_db(task_id)
     return {"success": True, "data": {"answer": answer}}
 
 
@@ -714,13 +883,16 @@ async def ask_question_stream(
     history = manager.get_qa_history(task_id)
     context = _qa_context_text(state)
     keyframes = state.get("keyframes") or []
-    with_images = (settings.qa_configured or settings.chat_configured) and bool(keyframes)
+    post_images = state.get("post_images") or []
+    is_image_text = state.get("content_type") == "image_text"
+    with_images = bool(post_images) if is_image_text else ((settings.qa_configured or settings.chat_configured) and bool(keyframes))
     messages = _build_qa_messages(
         context,
         history,
         body.question,
         with_images=with_images,
         keyframes=keyframes,
+        images=post_images if is_image_text else None,
     )
     manager.append_qa_message(task_id, "user", body.question)
 
@@ -753,6 +925,7 @@ async def ask_question_stream(
             if not answer:
                 raise RuntimeError("模型未返回内容")
             manager.append_qa_message(task_id, "assistant", answer)
+            await manager.persist_to_db(task_id)
             yield VideoTaskManager._sse_event("done", {"answer": answer})
         except Exception as exc:  # noqa: BLE001
             yield VideoTaskManager._sse_event(

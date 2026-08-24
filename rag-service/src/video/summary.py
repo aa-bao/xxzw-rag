@@ -297,6 +297,106 @@ async def generate_summary(
                 pass
 
 
+_IMAGE_POST_SYSTEM_PROMPT = (
+    "你是图文内容解析助手。下面是一篇社交媒体图文帖的正文，随后还有若干张帖子图片。"
+    "请结合文章文字与图片内容，只输出一个 JSON 对象（不要输出其他文字）：\n"
+    '{"title": "不超过30字的标题", '
+    '"summary": "3-6 句话的中文摘要，概括图文主旨与核心信息", '
+    '"keypoints": ["3-6 条要点，每条 1-2 句话"], '
+    '"image_captions": {"图片1": "该图的一句话说明", "图片2": "..."}}\n\n'
+    "注意：image_captions 的键建议使用「图片1」「图片2」等与图片顺序一致，"
+    "没有把握的图片不要编造。\n【图文正文】\n"
+)
+
+
+def _normalize_image_post_summary(data: dict[str, Any] | None, *, title_hint: str = "") -> dict[str, Any]:
+    data = data or {}
+    captions: dict[str, str] = {}
+    raw_captions = data.get("image_captions")
+    if isinstance(raw_captions, dict):
+        for key, value in raw_captions.items():
+            text = str(value).strip()
+            if text:
+                captions[str(key).strip()] = text
+    return {
+        "title": str(data.get("title") or "").strip() or title_hint,
+        "summary": str(data.get("summary") or "").strip(),
+        "keypoints": [str(k).strip() for k in (data.get("keypoints") or []) if str(k).strip()],
+        "visual_notes": [],
+        "keyframe_captions": {},
+        "image_captions": captions,
+        "mode": "image_text",
+    }
+
+
+async def generate_image_post_summary(
+    post_text: str,
+    images: list[dict[str, Any]],
+    settings: VideoAgentSettings,
+    app,
+    *,
+    title_hint: str = "",
+    output_path=None,
+) -> dict[str, Any]:
+    """用多模态 Chat 生成图文帖摘要与分图说明；失败返回 {}。"""
+    client, owns = make_chat_client(settings, app)
+    try:
+        content: list[dict[str, Any]] = [
+            {
+                "type": "text",
+                "text": _IMAGE_POST_SYSTEM_PROMPT
+                + (post_text or "")[:_TRANSCRIPT_LIMIT]
+                + "\n以下按顺序附帖子图片。",
+            }
+        ]
+        for img in images[: _MAX_VISUAL_FRAMES]:
+            url = _image_to_data_url(str(img.get("path") or ""))
+            if url:
+                content.append({"type": "image_url", "image_url": {"url": url}})
+        if len(content) == 1:
+            # 没有可用图片时退化为纯文本总结
+            messages = [
+                {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT + (post_text or "")[:_TRANSCRIPT_LIMIT]},
+                {"role": "user", "content": "请输出摘要 JSON。"},
+            ]
+            answer = await client.complete(messages, max_tokens=2000)
+        else:
+            messages = [
+                {"role": "system", "content": "你是图文内容解析助手，请严格按照用户要求输出 JSON。"},
+                {"role": "user", "content": content},
+            ]
+            try:
+                answer = await client.complete(messages, max_tokens=2000)
+            except Exception as exc:  # noqa: BLE001
+                # 当前模型不支持图片时降级为纯文本摘要
+                import logging
+
+                logging.getLogger(__name__).warning(
+                    "image post multimodal summary failed, fallback to text: %s", exc
+                )
+                messages = [
+                    {"role": "system", "content": _SUMMARY_SYSTEM_PROMPT + (post_text or "")[:_TRANSCRIPT_LIMIT]},
+                    {"role": "user", "content": "请输出摘要 JSON。"},
+                ]
+                answer = await client.complete(messages, max_tokens=2000)
+        data = _extract_json(answer) or {}
+        summary = _normalize_image_post_summary(data, title_hint=title_hint)
+        if output_path is not None:
+            _write_summary(output_path, summary)
+        return summary
+    except Exception as exc:  # noqa: BLE001 — 摘要失败不致命
+        import logging
+
+        logging.getLogger(__name__).warning("image post summary generation failed: %s", exc)
+        return {}
+    finally:
+        if owns:
+            try:
+                await client._client.aclose()
+            except Exception:
+                pass
+
+
 def _write_summary(output_path, summary: dict[str, Any]) -> None:
     try:
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)

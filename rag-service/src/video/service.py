@@ -29,11 +29,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, Callable
 
+from src.db.repositories import VideoTaskRepository
 from src.video import acquire, audio as video_audio, asr as video_asr, frames as video_frames
 from src.video.config import VideoConfig
 from src.video.report import render_report_html
 from src.video.settings import VideoAgentSettings
-from src.video.summary import generate_summary
+from src.video.summary import generate_image_post_summary, generate_summary
 from src.video.transcript import (
     estimate_text_tokens,
     merge_chunk_results,
@@ -118,6 +119,41 @@ class VideoTaskManager:
             json.dumps(state, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
+
+    # ── MySQL 镜像（文件系统仍是实时状态源，DB 用于存档/统计） ──
+
+    async def persist_to_db(self, state: dict[str, Any] | str) -> None:
+        """把任务状态写入 MySQL；失败只记日志，不阻断流水线。"""
+        if self._app is None:
+            return
+        session_factory = getattr(self._app.state, "session_factory", None)
+        if session_factory is None:
+            return
+        if isinstance(state, str):
+            state = self._load(state) or {}
+        if not state:
+            return
+        try:
+            async with session_factory() as session:
+                await VideoTaskRepository(session).upsert_state(state)
+        except Exception as exc:  # noqa: BLE001 — DB 镜像失败不影响解析任务
+            import logging
+
+            logging.getLogger(__name__).warning("video task DB persist failed: %s", exc)
+
+    async def delete_from_db(self, task_id: str) -> None:
+        if self._app is None:
+            return
+        session_factory = getattr(self._app.state, "session_factory", None)
+        if session_factory is None:
+            return
+        try:
+            async with session_factory() as session:
+                await VideoTaskRepository(session).delete(task_id)
+        except Exception as exc:  # noqa: BLE001
+            import logging
+
+            logging.getLogger(__name__).warning("video task DB delete failed: %s", exc)
 
     def _update_stage(self, task_id: str, stage: str) -> None:
         state = self._load(task_id)
@@ -227,13 +263,19 @@ class VideoTaskManager:
 
     # ── 任务提交 ──
 
-    def submit(self, source: str, *, kind: str = "url", frames: int = 12) -> dict[str, Any]:
-        """登记新任务并返回初始状态。调用方（router）负责启动后台执行。"""
+    def submit(
+        self, source: str, *, kind: str = "url", frames: int = 12, content_type: str = "auto"
+    ) -> dict[str, Any]:
+        """登记新任务并返回初始状态。调用方（router）负责启动后台执行。
+
+        content_type: auto | video | image_text
+        """
         task_id = uuid.uuid4().hex[:16]
         state: dict[str, Any] = {
             "task_id": task_id,
             "source": source,
             "kind": kind,
+            "content_type": content_type,
             "status": STATUS_SUBMITTED,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -248,6 +290,14 @@ class VideoTaskManager:
             "summary": None,
             "pid": None,
             "frames_requested": frames,
+            "video_path": None,
+            "audio_path": None,
+            "post_text": None,
+            "author": None,
+            "hashtags": None,
+            "publish_time": None,
+            "post_images": [],
+            "image_captions": None,
             "events": [],
             "qa_history": [],
         }
@@ -257,26 +307,33 @@ class VideoTaskManager:
 
     # ── 后台执行 ──
 
-    async def run(self, task_id: str, source: str, *, frames: int = 12, kind: str = "url") -> None:
+    async def run(
+        self, task_id: str, source: str, *, frames: int = 12, kind: str = "url", content_type: str = "auto"
+    ) -> None:
         try:
             await asyncio.wait_for(
-                self._run_pipeline(task_id, source, frames=frames, kind=kind),
+                self._run_pipeline(
+                    task_id, source, frames=frames, kind=kind, content_type=content_type
+                ),
                 timeout=_TASK_TIMEOUT_SECONDS,
             )
         except asyncio.TimeoutError:
-            self._fail(task_id, f"任务超时（{_TASK_TIMEOUT_SECONDS // 60} 分钟）")
+            await self._fail(task_id, f"任务超时（{_TASK_TIMEOUT_SECONDS // 60} 分钟）")
         except asyncio.CancelledError:
-            self._fail(task_id, "任务已取消")
+            await self._fail(task_id, "任务已取消")
             raise
         except Exception as exc:  # noqa: BLE001 — 任务失败统一落盘
-            self._fail(task_id, f"任务执行异常: {exc}")
+            await self._fail(task_id, f"任务执行异常: {exc}")
 
-    async def _run_pipeline(self, task_id: str, source: str, *, frames: int, kind: str) -> None:
+    async def _run_pipeline(
+        self, task_id: str, source: str, *, frames: int, kind: str, content_type: str = "auto"
+    ) -> None:
         state = self._load(task_id)
         if state is None:
             return
         state["status"] = STATUS_RUNNING
         state["stage"] = "starting"
+        state["content_type"] = content_type or "auto"
         self._save(state)
         self._emit_event(
             task_id, "starting", "启动解析",
@@ -292,11 +349,30 @@ class VideoTaskManager:
         self._save(state)
         started = time.perf_counter()
 
-        try:
-            await self._pipeline_body(
-                task_id, source, frames, kind, settings, output_root, started,
-                state,
+        # 先识别内容类型：自动/视频/图文
+        resolved_type = await self._resolve_content_type(
+            task_id, source, kind, content_type,
+            output_root=output_root,
+            state=state,
+        )
+        if resolved_type == "unknown":
+            raise VideoTaskError(
+                "无法自动识别链接是视频还是图文，请在提交时手动选择「视频」或「图文」后重试。"
             )
+        state = self._load(task_id) or {}
+        state["content_type"] = resolved_type
+        self._save(state)
+
+        try:
+            if resolved_type == "image_text":
+                await self._run_image_pipeline(
+                    task_id, source, settings, output_root, started,
+                )
+            else:
+                await self._pipeline_body(
+                    task_id, source, frames, kind, settings, output_root, started,
+                    state,
+                )
         except Exception:
             # 失败收尾：等待关键帧协程完成（若有），并把产物写入状态
             frames_task = getattr(self, "_pending_frames", None)
@@ -323,18 +399,35 @@ class VideoTaskManager:
         state["cost"] = (self._final_report or {}).get("cost") or {}
         state["summary"] = self._final_summary
         state["transcript_source"] = self._final_transcript_source
+        state["video_path"] = state.get("video_path") or getattr(self, "_final_video_path", None)
+        state["audio_path"] = state.get("audio_path") or getattr(self, "_final_audio_path", None)
         self._save(state)
-        self._emit_event(
-            task_id, "complete", "解析完成",
-            f"已生成转录 {len(self._final_transcript or '')} 字、"
-            f"{len(self._final_keyframes or [])} 张关键帧、摘要与 HTML 报告。",
-            level="success",
-            data={
+        if state.get("content_type") == "image_text":
+            complete_msg = (
+                f"已解析图文：{len(state.get('post_images') or [])} 张图片、"
+                f"正文 {len(state.get('post_text') or '')} 字，已生成图文摘要。"
+            )
+            complete_data: dict[str, Any] = {
+                "content_type": "image_text",
+                "images": len(state.get("post_images") or []),
+            }
+        else:
+            complete_msg = (
+                f"已生成转录 {len(self._final_transcript or '')} 字、"
+                f"{len(self._final_keyframes or [])} 张关键帧、摘要与 HTML 报告。"
+            )
+            complete_data = {
                 "duration_seconds": (self._final_report or {}).get("duration_seconds"),
                 "cost": (self._final_report or {}).get("cost"),
-            },
+            }
+        self._emit_event(
+            task_id, "complete", "解析完成",
+            complete_msg,
+            level="success",
+            data=complete_data,
         )
         self._close_event_stream(task_id)
+        await self.persist_to_db(task_id)
 
         # 输出目录落一份自包含 manifest + transcript（视频库/外部工具可读）
         try:
@@ -352,6 +445,15 @@ class VideoTaskManager:
                 "summary": self._final_summary or {},
                 "keyframes": self._final_keyframes,
                 "cost": (self._final_report or {}).get("cost") or {},
+                "video_path": getattr(self, "_final_video_path", None),
+                "audio_path": getattr(self, "_final_audio_path", None),
+                "content_type": state.get("content_type") or "video",
+                "post_text": state.get("post_text") or None,
+                "author": state.get("author") or None,
+                "hashtags": state.get("hashtags") or None,
+                "publish_time": state.get("publish_time") or None,
+                "post_images": state.get("post_images") or None,
+                "image_captions": state.get("image_captions") or None,
             }
             (output_root / "manifest.json").write_text(
                 json.dumps(manifest_out, ensure_ascii=False, indent=2) + "\n",
@@ -362,6 +464,167 @@ class VideoTaskManager:
             )
         except OSError:
             pass
+
+    # ── 类型识别与图文流水线 ──
+
+    async def _resolve_content_type(
+        self,
+        task_id: str,
+        source: str,
+        kind: str,
+        content_type: str,
+        *,
+        output_root: Path,
+        state: dict[str, Any],
+    ) -> str:
+        """自动识别视频/图文；已指定类型则直接返回。"""
+        if kind == "file":
+            return "video"
+        if content_type in ("video", "image_text"):
+            return content_type
+
+        self._update_stage(task_id, "detecting")
+        self._emit_event(
+            task_id, "detecting", "识别内容类型",
+            "正在自动判断该链接是视频还是图文…",
+        )
+        try:
+            info = await asyncio.to_thread(
+                acquire.probe_media_info,
+                source,
+                45.0,
+                referer=source,
+                cookies=self._config.cookie_file,
+                no_proxy=acquire.is_weixin_sph_url(source),
+            )
+            detected = acquire.classify_media_type(info)
+            # 探测结果写回 state，供后续图文流水线再次使用（避免重复探测）
+            state["content_type"] = detected
+            state["_probe_info_ready"] = True
+            self._save(state)
+            self._emit_event(
+                task_id, "detected", "类型识别完成",
+                f"识别为：{'图文' if detected == 'image_text' else '视频' if detected == 'video' else '未知'}",
+                level="success" if detected != "unknown" else "warning",
+                data={"content_type": detected},
+            )
+            return detected
+        except Exception as exc:  # noqa: BLE001
+            self._emit_event(
+                task_id, "detect_failed", "类型识别失败",
+                f"无法自动识别内容类型：{exc}",
+                level="warning",
+            )
+            return "unknown"
+
+    async def _run_image_pipeline(
+        self,
+        task_id: str,
+        source: str,
+        settings: VideoAgentSettings,
+        output_root: Path,
+        started: float,
+    ) -> None:
+        """图文/图片帖流水线：抓取元信息 + 下载图片 + 多模态图文摘要。"""
+        timings: dict[str, float] = {}
+
+        self._update_stage(task_id, "fetching_image_post")
+        self._emit_event(
+            task_id, "fetching_image_post", "抓取图文内容",
+            f"正在通过 yt-dlp 提取图文帖信息…",
+            data={"source": source},
+        )
+        info = await asyncio.to_thread(
+            acquire.probe_media_info,
+            source,
+            60.0,
+            referer=source,
+            cookies=self._config.cookie_file,
+            no_proxy=acquire.is_weixin_sph_url(source),
+        )
+        meta = acquire.extract_image_post_meta(info)
+
+        images_dir = output_root / "images"
+        images = await asyncio.to_thread(
+            acquire.download_image_post,
+            source,
+            info,
+            images_dir,
+            120.0,
+            referer=source,
+            cookies=self._config.cookie_file,
+        )
+
+        state = self._load(task_id) or {}
+        state["content_type"] = "image_text"
+        state["post_text"] = str(meta.get("post_text") or "")
+        state["author"] = str(meta.get("author") or "")
+        state["hashtags"] = list(meta.get("hashtags") or [])
+        state["publish_time"] = str(meta.get("publish_time") or "")
+        state["post_images"] = images
+        state["output_dir"] = str(output_root)
+        self._save(state)
+
+        self._emit_event(
+            task_id, "images_downloaded", "图文抓取完成",
+            f"共下载 {len(images)} 张图片，标题长度 {len(str(meta.get('post_text') or ''))} 字。",
+            level="success",
+            data={"images": len(images), "post_text_len": len(str(meta.get("post_text") or ""))},
+        )
+
+        # 多模态图文摘要（失败不致命）
+        self._update_stage(task_id, "visual_understanding")
+        self._emit_event(
+            task_id, "visual_understanding", "理解图文内容",
+            f"正在用多模态模型阅读 {len(images)} 张图片与正文…",
+            data={"images": len(images)},
+        )
+        try:
+            summary = await generate_image_post_summary(
+                str(meta.get("post_text") or ""),
+                images,
+                settings,
+                self._app,
+                title_hint=str(meta.get("title") or ""),
+                output_path=output_root / "summary.json",
+            )
+            self._emit_event(
+                task_id, "summary_completed", "图文摘要生成完成",
+                f"摘要 {len(summary.get('summary') or '')} 字，图片说明 {len(summary.get('image_captions') or {})} 张。",
+                level="success",
+                data={"summary_chars": len(summary.get("summary") or ""), "captions": len(summary.get("image_captions") or {})},
+            )
+        except Exception as exc:  # noqa: BLE001
+            summary = {}
+            self._emit_event(
+                task_id, "summary_failed", "图文摘要生成失败",
+                f"已降级为仅图文展示：{exc}",
+                level="warning",
+            )
+
+        timings["total"] = round(time.perf_counter() - started, 3)
+        report: dict[str, Any] = {
+            "task_id": task_id,
+            "source": source,
+            "status": "complete",
+            "content_type": "image_text",
+            "title": str(meta.get("title") or ""),
+            "author": str(meta.get("author") or ""),
+            "hashtags": list(meta.get("hashtags") or []),
+            "publish_time": str(meta.get("publish_time") or ""),
+            "images": images,
+            "timings_seconds": timings,
+            "generated_at": datetime.now(UTC).isoformat(timespec="seconds"),
+            "output_dir": str(output_root),
+        }
+
+        self._final_report = report
+        self._final_transcript = ""
+        self._final_keyframes = []
+        self._final_summary = summary
+        self._final_transcript_source = ""
+        self._final_video_path = None
+        self._final_audio_path = None
 
     async def _pipeline_body(
         self,
@@ -392,6 +655,9 @@ class VideoTaskManager:
         asr_billable_seconds = 0.0
         asr_usage_events: list[dict[str, Any]] = []
         chunk_timings: list[float] = []
+        # 可播放媒体产物（输出目录内持久化，供右侧媒体面板预览/下载）
+        self._final_video_path: str | None = None
+        self._final_audio_path: str | None = None
 
         with tempfile.TemporaryDirectory(prefix="rag-video-") as tmp:
             work = Path(tmp)
@@ -539,6 +805,12 @@ class VideoTaskManager:
                 audio_path = work / "audio.mp3"
                 await asyncio.to_thread(acquire.extract_local_audio, local_path, audio_path, 180.0)
                 acquisition_source = "local-file"
+                if local_path.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}:
+                    self._final_video_path = str(local_path.resolve())
+                    live_state = self._load(task_id)
+                    if live_state is not None:
+                        live_state["video_path"] = self._final_video_path
+                        self._save(live_state)
                 self._update_stage(task_id, "audio_extracted")
                 self._emit_event(
                     task_id, "audio_extracted", "本地音频提取完成",
@@ -546,6 +818,17 @@ class VideoTaskManager:
                     level="success",
                     data={"duration_seconds": duration},
                 )
+
+            # 把音频产物持久化到输出目录，供右侧媒体面板预览/下载
+            if audio_path is not None:
+                output_root.mkdir(parents=True, exist_ok=True)
+                audio_dest = output_root / "audio.mp3"
+                await asyncio.to_thread(shutil.copy2, audio_path, audio_dest)
+                self._final_audio_path = str(audio_dest)
+                live_state = self._load(task_id)
+                if live_state is not None:
+                    live_state["audio_path"] = self._final_audio_path
+                    self._save(live_state)
 
             # ── 并行：ASR 转写 与 关键帧提取 ──
             frames_task: asyncio.Task | None = None
@@ -583,8 +866,8 @@ class VideoTaskManager:
                 if plan:
                     if not settings.asr_configured:
                         raise VideoTaskError(
-                            "ASR 凭证未配置：请在 agent设置页填写火山引擎语音技术 API Key "
-                            "（或 App ID + Access Token），或配置 .env 的 VOLC_ASR_*"
+                            "ASR 凭证未配置：请在 agent设置页或 .env 配置当前渠道凭证（"
+                            "百炼 DASHSCOPE_ASR_API_KEY / 火山 VOLC_ASR_API_KEY）"
                         )
                     self._emit_event(
                         task_id, "asr_planned", "ASR 分片规划完成",
@@ -823,23 +1106,34 @@ class VideoTaskManager:
                 data={"frames_requested": frames},
             )
             if acquire.is_url(source):
+                # 直接把低码率视频持久化到输出目录，右侧媒体面板可直接播放/下载
+                video_out_dir = self._config.output_root / task_id
+                video_out_dir.mkdir(parents=True, exist_ok=True)
                 video_for_frames = await asyncio.to_thread(
                     acquire.download_url_video,
                     direct_source,
-                    Path(tempfile.gettempdir()) / f"rag-video-frames-{task_id}",
+                    video_out_dir,
                     300.0,
                     referer=referer,
                     cookies=browser_cookies or self._config.cookie_file,
                     max_height=360,
                     no_proxy=acquire.is_weixin_sph_url(source),
                 )
+                self._final_video_path = str(video_for_frames.resolve())
+                live_state = self._load(task_id)
+                if live_state is not None:
+                    live_state["video_path"] = self._final_video_path
+                    self._save(live_state)
                 self._emit_event(
                     task_id, "frames_downloaded", "关键帧视频已就绪",
-                    "低码率视频下载完成，开始抽帧。",
+                    "低码率视频下载完成，已保存到媒体面板，开始抽帧。",
                     level="success",
+                    data={"video_path": self._final_video_path},
                 )
             else:
                 video_for_frames = Path(source).expanduser()
+                if video_for_frames.suffix.lower() in {".mp4", ".mkv", ".webm", ".mov", ".m4v", ".avi", ".flv", ".wmv"}:
+                    self._final_video_path = str(video_for_frames.resolve())
 
             if video_for_frames is None:
                 return kf
@@ -938,7 +1232,7 @@ class VideoTaskManager:
             "output_dir": kw["output_dir"],
         }
 
-    def _fail(self, task_id: str, message: str) -> None:
+    async def _fail(self, task_id: str, message: str) -> None:
         state = self._load(task_id)
         if state is None:
             return
@@ -953,6 +1247,7 @@ class VideoTaskManager:
             data={"error": message},
         )
         self._close_event_stream(task_id)
+        await self.persist_to_db(task_id)
 
     # ── 查询 ──
 
@@ -1216,10 +1511,14 @@ class VideoTaskManager:
 
     # ── 启动 / 停止 ──
 
-    def start_background(self, task_id: str, source: str, *, frames: int = 12, kind: str = "url") -> None:
+    def start_background(
+        self, task_id: str, source: str, *, frames: int = 12, kind: str = "url", content_type: str = "auto"
+    ) -> None:
         """启动后台任务（在事件循环内调度）。"""
         loop = asyncio.get_event_loop()
-        task = loop.create_task(self.run(task_id, source, frames=frames, kind=kind))
+        task = loop.create_task(
+            self.run(task_id, source, frames=frames, kind=kind, content_type=content_type)
+        )
         self._running[task_id] = task
         task.add_done_callback(lambda _t: self._running.pop(task_id, None))
 

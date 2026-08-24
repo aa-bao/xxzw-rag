@@ -22,16 +22,22 @@
           <div class="input-row">
             <el-input
               v-model="urlInput"
-              placeholder="粘贴视频链接（B站 / 抖音 / 微信视频号 / YouTube 等）"
+              placeholder="粘贴视频链接或带链接的分享文案（自动提取链接）"
               clearable
               :disabled="submitting"
               @keyup.enter="handleSubmit"
+              @paste="handleUrlPaste"
             />
             <el-select v-model="frames" class="frames-select" aria-label="关键帧数量">
               <el-option :value="0" label="纯音频（无关键帧）" />
               <el-option :value="8" label="8 帧（精简）" />
               <el-option :value="12" label="12 帧（默认）" />
               <el-option :value="24" label="24 帧（详细）" />
+            </el-select>
+            <el-select v-model="contentType" class="content-type-select" aria-label="内容类型">
+              <el-option value="auto" label="自动识别" />
+              <el-option value="video" label="视频" />
+              <el-option value="image_text" label="图文" />
             </el-select>
             <el-button
               type="primary"
@@ -44,7 +50,7 @@
               开始解析
             </el-button>
           </div>
-          <div class="input-hint">支持主流平台公开链接；Agent 每一步都会实时展示。</div>
+          <div class="input-hint">支持直接粘贴分享文案，系统会自动提取其中的视频链接；Agent 每一步都会实时展示。</div>
         </el-tab-pane>
 
         <el-tab-pane label="本地上传" name="file">
@@ -122,6 +128,9 @@
         </div>
 
         <div class="phase-list">
+          <div v-if="!pipelinePhases.length" class="phase-list-empty">
+            正在等待 Agent 启动第一步…
+          </div>
           <div
             v-for="phase in pipelinePhases"
             :key="phase.id"
@@ -161,134 +170,295 @@
         </div>
       </aside>
 
-      <!-- 右侧：结果 + 问答 -->
-      <div class="card glass-surface agent-results" aria-label="解析结果">
-        <div class="results-head">
-          <h2 class="card__title">解析结果</h2>
-          <div class="card__actions">
-            <el-button v-if="active.status === 'complete'" text size="small" class="btn-press" @click="openReport">
-              <el-icon class="btn-icon" aria-hidden="true"><Document /></el-icon>
-              HTML 报告
-            </el-button>
-            <el-button text size="small" class="btn-press" @click="refreshActive">
-              <el-icon class="btn-icon" aria-hidden="true"><Refresh /></el-icon>
-              刷新
-            </el-button>
+      <!-- 图文模式：中间图文内容 + 右侧图文问答 -->
+      <template v-if="isImageTextTask">
+        <div class="card glass-surface image-content" aria-label="图文内容">
+          <div class="image-content__head">
+            <div>
+              <h2 class="card__title">图文内容</h2>
+              <p v-if="postAuthor || postPublishTime" class="image-content__meta">
+                <span v-if="postAuthor">@{{ postAuthor }}</span>
+                <span v-if="postPublishTime">{{ postPublishTime }}</span>
+              </p>
+            </div>
+            <div class="card__actions">
+              <el-button v-if="active.status === 'complete'" text size="small" class="btn-press" @click="openReport">
+                <el-icon class="btn-icon" aria-hidden="true"><Document /></el-icon>
+                HTML 报告
+              </el-button>
+              <el-button text size="small" class="btn-press" @click="refreshActive">
+                <el-icon class="btn-icon" aria-hidden="true"><Refresh /></el-icon>
+                刷新
+              </el-button>
+            </div>
+          </div>
+
+          <div v-if="postHashtags.length" class="image-content__tags">
+            <el-tag v-for="(tag, i) in postHashtags" :key="i" size="small" effect="plain" class="image-tag">{{ tag }}</el-tag>
+          </div>
+
+          <div v-if="active.status === 'running' || active.status === 'submitted'" class="image-content__loading">
+            <el-icon class="is-loading" aria-hidden="true"><Loading /></el-icon>
+            正在抓取图文内容与图片…
+          </div>
+
+          <div v-if="active.post_images?.length" class="image-content__gallery">
+            <figure v-for="(img, idx) in active.post_images" :key="idx" class="image-content__item">
+              <img
+                :src="postImageUrlFor(img.path)"
+                :alt="'图片 ' + (idx + 1)"
+                loading="lazy"
+                class="image-content__img"
+              />
+              <figcaption class="image-content__caption">
+                <span class="image-content__caption-index">图片 {{ idx + 1 }}</span>
+                <span v-if="imageCaptionFor(idx)" class="image-content__caption-text">{{ imageCaptionFor(idx) }}</span>
+              </figcaption>
+            </figure>
+          </div>
+
+          <div v-if="postText" class="image-content__section">
+            <h3 class="section-title">正文</h3>
+            <p class="image-content__body">{{ postText }}</p>
+          </div>
+
+          <div v-if="summaryText" class="image-content__section">
+            <h3 class="section-title">图文摘要</h3>
+            <p class="summary-text">{{ summaryText }}</p>
           </div>
         </div>
 
-        <div v-if="active.status === 'complete'">
-          <div class="detail-meta">
-            <span class="meta-item"><b>时长：</b>{{ formatDuration(reportDuration) }}</span>
-            <span class="meta-item"><b>转录来源：</b>{{ transcriptSource || '未知' }}</span>
-            <span class="meta-item" v-if="costAsr"><b>ASR 成本：</b>¥{{ costAsr }}</span>
-          </div>
-
-          <div v-if="summaryText || summaryKeypoints.length || visualNotes.length" class="summary-section">
-            <div v-if="summaryText" class="summary-block">
-              <h3 class="section-title">摘要</h3>
-              <p class="summary-text">{{ summaryText }}</p>
-            </div>
-            <div v-if="summaryKeypoints.length" class="summary-block">
-              <h3 class="section-title">要点</h3>
-              <ul class="summary-list">
-                <li v-for="(kp, i) in summaryKeypoints" :key="i" class="summary-li">{{ kp }}</li>
-              </ul>
-            </div>
-            <div v-if="visualNotes.length" class="summary-block">
-              <h3 class="section-title">画面洞察</h3>
-              <ul class="summary-list">
-                <li v-for="(note, i) in visualNotes" :key="'v' + i" class="summary-li">{{ note }}</li>
-              </ul>
+        <aside class="card glass-surface image-qa" aria-label="图文问答">
+          <div class="qa-head">
+            <div class="qa-head__text">
+              <h2 class="card__title">图文问答</h2>
+              <p class="qa-hint">基于文章正文与帖子图片回答，可连续追问。</p>
             </div>
           </div>
+          <div class="qa-chat image-qa__chat">
+            <div v-if="qaMessages.length === 0 && !qaStreaming" class="qa-empty">
+              <el-icon class="qa-empty__icon" aria-hidden="true"><ChatDotRound /></el-icon>
+              <p>还没有提问，试试问“这篇图文讲了什么？”</p>
+            </div>
+            <div v-for="(msg, i) in qaMessages" :key="i" class="qa-msg" :class="msg.role === 'user' ? 'qa-msg--user' : 'qa-msg--assistant'">
+              <div v-if="msg.role === 'user'" class="qa-msg__role">你</div>
+              <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+              <div class="qa-msg__bubble">{{ msg.content }}</div>
+            </div>
+            <div v-if="qaStreaming" class="qa-msg qa-msg--assistant">
+              <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+              <div class="qa-msg__bubble qa-msg__bubble--streaming">
+                <span v-if="!qaStreamingText" class="qa-typing">
+                  <span class="qa-typing__dot"></span>
+                  <span class="qa-typing__dot"></span>
+                  <span class="qa-typing__dot"></span>
+                </span>
+                <template v-else>{{ qaStreamingText }}</template>
+              </div>
+            </div>
+          </div>
+          <div class="input-row qa-input">
+            <el-input
+              v-model="qaQuestion"
+              placeholder="就图片或正文继续提问，如：图片里有什么关键信息？"
+              clearable
+              :disabled="qaLoading"
+              @keyup.enter="handleQa"
+            />
+            <el-button type="primary" class="btn-press" :loading="qaLoading" :disabled="!qaQuestion.trim()" @click="handleQa">
+              <el-icon class="btn-icon" aria-hidden="true"><Promotion /></el-icon>
+              提问
+            </el-button>
+          </div>
+        </aside>
+      </template>
 
-          <div v-if="active.keyframes.length" class="frame-section">
-            <h3 class="section-title">关键帧</h3>
-            <div class="frame-grid">
-              <figure v-for="(kf, idx) in active.keyframes" :key="idx" class="frame-item">
-                <img :src="frameUrlFor(kf.path)" :alt="'关键帧 ' + (idx + 1)" loading="lazy" class="frame-img" />
-                <figcaption class="frame-caption">
-                  <span class="frame-caption__time">{{ formatTimestamp(kf.timestamp_seconds) }}</span>
-                  <span v-if="frameCaption(kf.timestamp_seconds)" class="frame-caption__text">{{ frameCaption(kf.timestamp_seconds) }}</span>
-                  <span v-else class="frame-caption__text frame-caption__text--empty">暂无画面描述</span>
+      <!-- 视频模式：右侧结果 + 媒体播放页 -->
+      <template v-else>
+        <div class="card glass-surface agent-results" aria-label="解析结果">
+          <div class="results-head">
+            <h2 class="card__title">解析结果</h2>
+            <div class="card__actions">
+              <el-button v-if="active.status === 'complete'" text size="small" class="btn-press" @click="openReport">
+                <el-icon class="btn-icon" aria-hidden="true"><Document /></el-icon>
+                HTML 报告
+              </el-button>
+              <el-button text size="small" class="btn-press" @click="refreshActive">
+                <el-icon class="btn-icon" aria-hidden="true"><Refresh /></el-icon>
+                刷新
+              </el-button>
+            </div>
+          </div>
+
+          <div v-if="active.status === 'complete'">
+            <div class="detail-meta">
+              <span class="meta-item"><b>时长：</b>{{ formatDuration(reportDuration) }}</span>
+              <span class="meta-item"><b>转录来源：</b>{{ transcriptSource || '未知' }}</span>
+              <span class="meta-item" v-if="costAsr"><b>ASR 成本：</b>¥{{ costAsr }}</span>
+            </div>
+
+            <div v-if="summaryText || summaryKeypoints.length || visualNotes.length" class="summary-section">
+              <div v-if="summaryText" class="summary-block">
+                <h3 class="section-title">摘要</h3>
+                <p class="summary-text">{{ summaryText }}</p>
+              </div>
+              <div v-if="summaryKeypoints.length" class="summary-block">
+                <h3 class="section-title">要点</h3>
+                <ul class="summary-list">
+                  <li v-for="(kp, i) in summaryKeypoints" :key="i" class="summary-li">{{ kp }}</li>
+                </ul>
+              </div>
+              <div v-if="visualNotes.length" class="summary-block">
+                <h3 class="section-title">画面洞察</h3>
+                <ul class="summary-list">
+                  <li v-for="(note, i) in visualNotes" :key="'v' + i" class="summary-li">{{ note }}</li>
+                </ul>
+              </div>
+            </div>
+
+            <div v-if="active.keyframes.length" class="frame-section">
+              <h3 class="section-title">关键帧</h3>
+              <div class="frame-grid">
+                <figure v-for="(kf, idx) in active.keyframes" :key="idx" class="frame-item">
+                  <img :src="frameUrlFor(kf.path)" :alt="'关键帧 ' + (idx + 1)" loading="lazy" class="frame-img" />
+                  <figcaption class="frame-caption">
+                    <span class="frame-caption__time">{{ formatTimestamp(kf.timestamp_seconds) }}</span>
+                    <span v-if="frameCaption(kf.timestamp_seconds)" class="frame-caption__text">{{ frameCaption(kf.timestamp_seconds) }}</span>
+                    <span v-else class="frame-caption__text frame-caption__text--empty">暂无画面描述</span>
+                  </figcaption>
+                </figure>
+              </div>
+            </div>
+
+            <div v-if="active.transcript" class="transcript-section">
+              <h3 class="section-title">转录文本</h3>
+              <pre class="transcript-body">{{ active.transcript }}</pre>
+            </div>
+
+            <div class="qa-section">
+              <div class="qa-head">
+                <div class="qa-head__text">
+                  <h3 class="section-title qa-title">视频问答</h3>
+                  <p class="qa-hint">基于真实转录与画面内容回答，可连续追问；回答会尽量标注 [MM:SS] 出处。</p>
+                </div>
+                <el-tag size="small" effect="plain" class="qa-model-tag">视频问答 · 流式</el-tag>
+              </div>
+              <div class="qa-chat">
+                <div v-if="qaMessages.length === 0 && !qaStreaming" class="qa-empty">
+                  <el-icon class="qa-empty__icon" aria-hidden="true"><ChatDotRound /></el-icon>
+                  <p>还没有提问，试试问“这个视频主要讲了什么？”</p>
+                </div>
+                <div v-for="(msg, i) in qaMessages" :key="i" class="qa-msg" :class="msg.role === 'user' ? 'qa-msg--user' : 'qa-msg--assistant'">
+                  <div v-if="msg.role === 'user'" class="qa-msg__role">你</div>
+                  <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+                  <div class="qa-msg__bubble">{{ msg.content }}</div>
+                </div>
+                <div v-if="qaStreaming" class="qa-msg qa-msg--assistant">
+                  <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+                  <div class="qa-msg__bubble qa-msg__bubble--streaming">
+                    <span v-if="!qaStreamingText" class="qa-typing">
+                      <span class="qa-typing__dot"></span>
+                      <span class="qa-typing__dot"></span>
+                      <span class="qa-typing__dot"></span>
+                    </span>
+                    <template v-else>{{ qaStreamingText }}</template>
+                  </div>
+                </div>
+              </div>
+              <div class="input-row qa-input">
+                <el-input
+                  v-model="qaQuestion"
+                  placeholder="继续深挖细节，如：第二分钟提到的数据是什么？"
+                  clearable
+                  :disabled="qaLoading"
+                  @keyup.enter="handleQa"
+                />
+                <el-button type="primary" class="btn-press" :loading="qaLoading" :disabled="!qaQuestion.trim()" @click="handleQa">
+                  <el-icon class="btn-icon" aria-hidden="true"><Promotion /></el-icon>
+                  提问
+                </el-button>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="active.status === 'running' || active.status === 'submitted'" class="results-running">
+            <p class="results-running__text">正在解析中，左侧可实时查看 Agent 执行步骤；完成后这里会展示摘要、关键帧、转录与问答。</p>
+            <div v-if="active.keyframes.length" class="frame-section">
+              <h3 class="section-title">已提取关键帧</h3>
+              <div class="frame-grid">
+                <figure v-for="(kf, idx) in active.keyframes" :key="idx" class="frame-item">
+                  <img :src="frameUrlFor(kf.path)" :alt="'关键帧 ' + (idx + 1)" loading="lazy" class="frame-img" />
+                  <figcaption class="frame-caption">{{ formatTimestamp(kf.timestamp_seconds) }}</figcaption>
+                </figure>
+              </div>
+            </div>
+          </div>
+
+          <div v-else-if="active.status === 'failed'" class="results-failed">
+            <el-alert v-if="cookieError" type="warning" :closable="false" show-icon class="cookie-error">
+              <template #title>平台 Cookie 已失效</template>
+              <p>请提醒管理员更新 <code>rag-service/cookies.txt</code> 后再试。</p>
+            </el-alert>
+            <p v-else class="results-failed__text">任务失败，左侧执行过程会标出失败位置。</p>
+          </div>
+        </div>
+
+        <!-- 右侧：媒体播放页（视频 / 音频 / 关键帧预览与下载） -->
+        <aside class="card glass-surface media-panel" aria-label="媒体播放">
+          <div class="media-head">
+            <div>
+              <h2 class="card__title">媒体</h2>
+              <p class="media-sub">预览与下载视频、音频和关键帧</p>
+            </div>
+            <el-tag v-if="videoSource" size="small" effect="plain" type="success">可播放</el-tag>
+            <el-tag v-else-if="active.status === 'running' || active.status === 'submitted'" size="small" effect="plain" type="info">生成中</el-tag>
+          </div>
+
+          <div v-if="videoSource" class="media-block media-block--video">
+            <h3 class="media-block__title">视频</h3>
+            <video
+              :src="videoSource"
+              controls
+              preload="metadata"
+              :poster="posterSource"
+              class="media-video"
+            ></video>
+            <div class="media-actions">
+              <a :href="videoDownloadUrl" target="_blank" rel="noopener" class="media-download media-download--primary">
+                <el-icon class="btn-icon" aria-hidden="true"><Download /></el-icon>
+                下载视频
+              </a>
+            </div>
+          </div>
+          <div v-else class="media-block media-block--empty">
+            <el-icon class="media-empty__icon" aria-hidden="true"><VideoPlay /></el-icon>
+            <p>{{ videoPlaceholderText }}</p>
+          </div>
+
+          <div v-if="audioSource" class="media-block media-block--audio">
+            <h3 class="media-block__title">音频</h3>
+            <audio :src="audioSource" controls preload="metadata" class="media-audio"></audio>
+            <div class="media-actions">
+              <a :href="audioDownloadUrl" target="_blank" rel="noopener" class="media-download">
+                下载音频
+              </a>
+            </div>
+          </div>
+
+          <div v-if="active.keyframes.length" class="media-block media-block--images">
+            <h3 class="media-block__title">图片列表</h3>
+            <div class="media-images">
+              <figure v-for="(kf, idx) in active.keyframes" :key="idx" class="media-image">
+                <img :src="frameUrlFor(kf.path)" :alt="'关键帧 ' + (idx + 1)" loading="lazy" class="media-image__img" />
+                <figcaption class="media-image__meta">
+                  <span class="media-image__time">{{ formatTimestamp(kf.timestamp_seconds) }}</span>
+                  <a :href="frameUrlFor(kf.path)" :download="'frame-' + (idx + 1) + '.jpg'" class="media-image__download">下载 #{{ idx + 1 }}</a>
                 </figcaption>
               </figure>
             </div>
           </div>
-
-          <div v-if="active.transcript" class="transcript-section">
-            <h3 class="section-title">转录文本</h3>
-            <pre class="transcript-body">{{ active.transcript }}</pre>
-          </div>
-
-          <div class="qa-section">
-            <div class="qa-head">
-              <div class="qa-head__text">
-                <h3 class="section-title qa-title">视频问答</h3>
-                <p class="qa-hint">基于真实转录与画面内容回答，可连续追问；回答会尽量标注 [MM:SS] 出处。</p>
-              </div>
-              <el-tag size="small" effect="plain" class="qa-model-tag">豆包 2.1 Turbo · 流式</el-tag>
-            </div>
-            <div class="qa-chat">
-              <div v-if="qaMessages.length === 0 && !qaStreaming" class="qa-empty">
-                <el-icon class="qa-empty__icon" aria-hidden="true"><ChatDotRound /></el-icon>
-                <p>还没有提问，试试问“这个视频主要讲了什么？”</p>
-              </div>
-              <div v-for="(msg, i) in qaMessages" :key="i" class="qa-msg" :class="msg.role === 'user' ? 'qa-msg--user' : 'qa-msg--assistant'">
-                <div v-if="msg.role === 'user'" class="qa-msg__role">你</div>
-                <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
-                <div class="qa-msg__bubble">{{ msg.content }}</div>
-              </div>
-              <div v-if="qaStreaming" class="qa-msg qa-msg--assistant">
-                <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
-                <div class="qa-msg__bubble qa-msg__bubble--streaming">
-                  <span v-if="!qaStreamingText" class="qa-typing">
-                    <span class="qa-typing__dot"></span>
-                    <span class="qa-typing__dot"></span>
-                    <span class="qa-typing__dot"></span>
-                  </span>
-                  <template v-else>{{ qaStreamingText }}</template>
-                </div>
-              </div>
-            </div>
-            <div class="input-row qa-input">
-              <el-input
-                v-model="qaQuestion"
-                placeholder="继续深挖细节，如：第二分钟提到的数据是什么？"
-                clearable
-                :disabled="qaLoading"
-                @keyup.enter="handleQa"
-              />
-              <el-button type="primary" class="btn-press" :loading="qaLoading" :disabled="!qaQuestion.trim()" @click="handleQa">
-                <el-icon class="btn-icon" aria-hidden="true"><Promotion /></el-icon>
-                提问
-              </el-button>
-            </div>
-          </div>
-        </div>
-
-        <div v-else-if="active.status === 'running' || active.status === 'submitted'" class="results-running">
-          <p class="results-running__text">正在解析中，左侧可实时查看 Agent 执行步骤；完成后这里会展示摘要、关键帧、转录与问答。</p>
-          <div v-if="active.keyframes.length" class="frame-section">
-            <h3 class="section-title">已提取关键帧</h3>
-            <div class="frame-grid">
-              <figure v-for="(kf, idx) in active.keyframes" :key="idx" class="frame-item">
-                <img :src="frameUrlFor(kf.path)" :alt="'关键帧 ' + (idx + 1)" loading="lazy" class="frame-img" />
-                <figcaption class="frame-caption">{{ formatTimestamp(kf.timestamp_seconds) }}</figcaption>
-              </figure>
-            </div>
-          </div>
-        </div>
-
-        <div v-else-if="active.status === 'failed'" class="results-failed">
-          <el-alert v-if="cookieError" type="warning" :closable="false" show-icon class="cookie-error">
-            <template #title>平台 Cookie 已失效</template>
-            <p>请提醒管理员更新 <code>rag-service/cookies.txt</code> 后再试。</p>
-          </el-alert>
-          <p v-else class="results-failed__text">任务失败，左侧执行过程会标出失败位置。</p>
-        </div>
-      </div>
+        </aside>
+      </template>
     </section>
 
     <!-- 任务列表抽屉：不移动主页面，点击按钮后从右侧滑出 -->
@@ -334,7 +504,7 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
 import { ElMessage } from 'element-plus'
-import { ChatDotRound, CircleCheck, CircleClose, Document, FolderOpened, Loading, Minus, Promotion, Refresh, UploadFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
+import { ChatDotRound, CircleCheck, CircleClose, Document, Download, FolderOpened, Loading, Minus, Promotion, Refresh, UploadFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
 import {
   agentAvatarUrl as getAgentAvatarUrl,
   askQuestionStream,
@@ -343,10 +513,13 @@ import {
   getQaHistory,
   getTask,
   listTasks,
+  postImageUrl,
   reportUrl,
   submitFileTask,
   submitUrlTask,
+  taskAudioUrl,
   taskEventUrl,
+  taskVideoUrl,
   uploadVideoFile,
   type VideoPipelineEvent,
   type VideoQaMessage,
@@ -357,6 +530,7 @@ import { streamSse } from '../api/sse'
 const inputMode = ref<'url' | 'file'>('url')
 const urlInput = ref('')
 const frames = ref(12)
+const contentType = ref<'auto' | 'video' | 'image_text'>('auto')
 const localFile = ref<File | null>(null)
 const submitting = ref(false)
 
@@ -421,12 +595,38 @@ function phaseOfStage(stage: string): PhaseId | null {
 
 // ── 输入提交 ──
 
+/** 从含有分享文案的文本中提取第一个 http(s) 链接 */
+function extractUrlFromText(text: string): string {
+  const trimmed = (text || '').trim()
+  if (!trimmed) return ''
+  const match = trimmed.match(/https?:\/\/[^\s]+/i)
+  if (!match) return trimmed
+  return match[0].replace(/[),.;!?，。；：！？、）》】"'”’]+$/, '')
+}
+
+/** 粘贴分享文案时自动提取链接，避免把整段文案提交给后端 */
+function handleUrlPaste(event: ClipboardEvent) {
+  const text = event.clipboardData?.getData('text') || ''
+  const url = extractUrlFromText(text)
+  if (url && url !== text.trim()) {
+    event.preventDefault()
+    urlInput.value = url
+    ElMessage.success('已自动提取链接')
+  }
+}
+
 async function handleSubmit() {
-  const source = urlInput.value.trim()
-  if (!source || submitting.value) return
+  const raw = urlInput.value.trim()
+  if (!raw || submitting.value) return
+  const source = extractUrlFromText(raw)
+  if (!source) return
+  if (source !== raw) {
+    urlInput.value = source
+    ElMessage.success('已自动提取链接')
+  }
   submitting.value = true
   try {
-    const task = await submitUrlTask(source, frames.value)
+    const task = await submitUrlTask(source, frames.value, contentType.value)
     urlInput.value = ''
     await refreshTasks()
     selectTask(task)
@@ -717,9 +917,9 @@ const pipelinePhases = computed<Phase[]>(() => {
     } else if (phaseEvents.some((ev) => ev.level === 'success')) {
       statusByPhase.set(id, 'success')
     } else if (task.status === 'running' || task.status === 'submitted') {
-      const last = phaseEvents[phaseEvents.length - 1]
       const currentStagePhase = task.stage ? phaseOfStage(task.stage) : null
-      statusByPhase.set(id, currentStagePhase === id ? 'running' : 'waiting')
+      // 已经发生过的阶段保留展示；正在执行的阶段标 running
+      statusByPhase.set(id, currentStagePhase === id ? 'running' : 'success')
     } else {
       statusByPhase.set(id, 'success')
     }
@@ -754,12 +954,22 @@ const pipelinePhases = computed<Phase[]>(() => {
     report: task.report ? '已完成' : '',
   }
 
-  return PHASE_ORDER.map((id) => ({
+  const allPhases = PHASE_ORDER.map((id) => ({
     id,
     title: titles[id],
     status: statusByPhase.get(id) || 'waiting',
     detail: detailText[id],
   }))
+
+  // 默认不展示全流程：只显示已经发生或正在执行的阶段，
+  // 后面的等待阶段等执行到再出现。
+  const currentId = task.stage ? phaseOfStage(task.stage) : null
+  return allPhases.filter((phase) => {
+    if (phase.status !== 'waiting') return true
+    if ((task.status === 'submitted' || task.status === 'running') && phase.id === currentId) return true
+    if ((task.status === 'submitted' || task.status === 'running') && phase.id === 'prepare') return true
+    return false
+  })
 })
 
 function asrDetail(): string {
@@ -911,6 +1121,45 @@ function frameUrlFor(path: string): string {
   return frameUrl(active.value!.task_id, name)
 }
 
+function isPlayableFileTask(task: VideoTask | null): boolean {
+  if (!task || task.kind !== 'file') return false
+  if (task.video_path) return true
+  return /\.(mp4|mkv|webm|mov|m4v|avi|flv|wmv)$/i.test(task.source)
+}
+
+const videoSource = computed(() => active.value && (active.value.video_path || isPlayableFileTask(active.value)) ? taskVideoUrl(active.value.task_id) : '')
+const audioSource = computed(() => active.value?.audio_path ? taskAudioUrl(active.value.task_id) : '')
+const videoDownloadUrl = computed(() => active.value && (active.value.video_path || isPlayableFileTask(active.value)) ? taskVideoUrl(active.value.task_id, true) : '')
+const audioDownloadUrl = computed(() => active.value?.audio_path ? taskAudioUrl(active.value.task_id, true) : '')
+const posterSource = computed(() => {
+  const first = active.value?.keyframes?.[0]
+  return first ? frameUrlFor(first.path) : ''
+})
+
+const videoPlaceholderText = computed(() => {
+  const task = active.value
+  if (!task) return '选择任务后显示媒体'
+  if (task.kind === 'file') return '本地上传文件已就绪；当前未生成视频预览'
+  if (task.status === 'complete') return '该任务没有可播放视频（可能是纯音频模式或下载失败）'
+  return '视频将在关键帧阶段下载并保存，稍后即可播放…'
+})
+
+const isImageTextTask = computed(() => active.value?.content_type === 'image_text')
+const postText = computed(() => active.value?.post_text || '')
+const postAuthor = computed(() => active.value?.author || '')
+const postHashtags = computed(() => active.value?.hashtags || [])
+const postPublishTime = computed(() => active.value?.publish_time || '')
+const postImageCaptions = computed(() => active.value?.image_captions || {})
+
+function postImageUrlFor(path: string): string {
+  const name = path.split(/[\\/]/).pop() ?? ''
+  return postImageUrl(active.value!.task_id, name)
+}
+
+function imageCaptionFor(index: number): string {
+  return postImageCaptions.value[`图片${index + 1}`] || postImageCaptions.value[String(index + 1)] || ''
+}
+
 onMounted(async () => {
   await refreshTasks()
 })
@@ -981,6 +1230,11 @@ onUnmounted(() => {
 
 .frames-select {
   width: 170px;
+  flex-shrink: 0;
+}
+
+.content-type-select {
+  width: 130px;
   flex-shrink: 0;
 }
 
@@ -1168,10 +1422,10 @@ onUnmounted(() => {
   color: var(--text-secondary);
 }
 
-/* ── 双栏布局 ── */
+/* ── 三栏布局：执行控制台 / 解析结果 / 媒体播放页 ── */
 .agent-layout {
   display: grid;
-  grid-template-columns: minmax(360px, 5fr) minmax(420px, 7fr);
+  grid-template-columns: minmax(320px, 4fr) minmax(380px, 5fr) minmax(280px, 3fr);
   gap: 20px;
   margin-top: 20px;
   align-items: start;
@@ -1183,13 +1437,9 @@ onUnmounted(() => {
   }
 }
 
-/* ── 左侧控制台 ── */
+/* ── 左侧控制台：随内容自然拉伸，不限制高度、不出现内部滚动条 ── */
 .agent-console {
   padding: 18px 20px;
-  position: sticky;
-  top: 0;
-  max-height: calc(100vh - 140px);
-  overflow-y: auto;
 }
 
 .console-head {
@@ -1240,6 +1490,14 @@ onUnmounted(() => {
 .phase-list {
   display: flex;
   flex-direction: column;
+}
+
+.phase-list-empty {
+  padding: 22px 12px;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-tertiary);
+  text-align: center;
 }
 
 .phase {
@@ -1406,6 +1664,165 @@ onUnmounted(() => {
   margin-bottom: 8px;
 }
 
+/* ── 媒体播放页（右侧） ── */
+.media-panel {
+  padding: 18px 20px;
+  position: sticky;
+  top: 0;
+  max-height: calc(100vh - 140px);
+  overflow-y: auto;
+}
+
+.media-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.media-sub {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.media-block {
+  margin-top: 18px;
+}
+
+.media-block + .media-block {
+  border-top: 1px solid var(--border-subtle);
+  padding-top: 18px;
+}
+
+.media-block__title {
+  margin: 0 0 10px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.media-video {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: var(--radius-2xl);
+  background: #000;
+  border: 1px solid var(--border-subtle);
+  object-fit: contain;
+}
+
+.media-audio {
+  display: block;
+  width: 100%;
+}
+
+.media-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.media-download {
+  flex: 1;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 8px 10px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  font-size: 12.5px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  background: var(--bg-subtle);
+  text-decoration: none;
+  transition: border-color 0.15s ease, color 0.15s ease, background 0.15s ease;
+}
+
+.media-download:hover {
+  border-color: color-mix(in srgb, var(--accent-blue) 40%, transparent);
+  color: var(--accent-blue);
+}
+
+.media-download--primary {
+  background: var(--text-primary);
+  border-color: transparent;
+  color: var(--bg-subtle);
+}
+
+.media-download--primary:hover {
+  background: color-mix(in srgb, var(--text-primary) 88%, var(--accent-blue));
+  color: #fff;
+  border-color: transparent;
+}
+
+.media-block--empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 34px 10px;
+  min-height: 180px;
+  text-align: center;
+  font-size: 12.5px;
+  line-height: 1.7;
+  color: var(--text-tertiary);
+}
+
+.media-block--empty p {
+  margin: 0;
+  max-width: 240px;
+}
+
+.media-empty__icon {
+  font-size: 38px;
+  color: color-mix(in srgb, var(--accent-blue) 38%, var(--text-tertiary));
+}
+
+.media-images {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(118px, 1fr));
+  gap: 10px;
+}
+
+.media-image {
+  margin: 0;
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
+}
+
+.media-image__img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  object-fit: cover;
+}
+
+.media-image__meta {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+  font-variant-numeric: tabular-nums;
+}
+
+.media-image__download {
+  color: var(--accent-blue);
+  text-decoration: none;
+  font-variant-numeric: normal;
+}
+
+.media-image__download:hover {
+  text-decoration: underline;
+}
+
 .results-running,
 .results-failed {
   padding: 40px 12px;
@@ -1418,6 +1835,110 @@ onUnmounted(() => {
   max-width: 480px;
   margin: 0 auto;
   text-align: left;
+}
+
+/* ── 图文模式：中间图文内容 + 右侧图文问答 ── */
+.image-content {
+  padding: 20px 22px;
+}
+
+.image-content__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.image-content__meta {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--text-tertiary);
+}
+
+.image-content__tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.image-tag {
+  border-radius: var(--radius-full);
+}
+
+.image-content__loading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 40px 12px;
+  font-size: 13px;
+  color: var(--text-tertiary);
+}
+
+.image-content__gallery {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.image-content__item {
+  margin: 0;
+  border-radius: var(--radius-2xl);
+  overflow: hidden;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-subtle);
+}
+
+.image-content__img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  object-fit: cover;
+  background: #000;
+}
+
+.image-content__caption {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  font-size: 11px;
+  color: var(--text-tertiary);
+}
+
+.image-content__caption-index {
+  font-variant-numeric: tabular-nums;
+}
+
+.image-content__caption-text {
+  color: var(--text-secondary);
+  line-height: 1.5;
+}
+
+.image-content__section {
+  margin-top: 18px;
+}
+
+.image-content__body {
+  margin: 0;
+  font-size: 14px;
+  line-height: 1.95;
+  color: var(--text-secondary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.image-qa {
+  padding: 18px 20px;
+  display: flex;
+  flex-direction: column;
+}
+
+.image-qa__chat {
+  flex: 1;
+  margin-top: 12px;
 }
 
 .detail-meta {
@@ -1734,6 +2255,7 @@ onUnmounted(() => {
 /* ── 滚动条美化 ── */
 .qa-chat::-webkit-scrollbar,
 .agent-console::-webkit-scrollbar,
+.media-panel::-webkit-scrollbar,
 .transcript-body::-webkit-scrollbar,
 .task-drawer__list::-webkit-scrollbar,
 .page::-webkit-scrollbar {
@@ -1743,6 +2265,7 @@ onUnmounted(() => {
 
 .qa-chat::-webkit-scrollbar-track,
 .agent-console::-webkit-scrollbar-track,
+.media-panel::-webkit-scrollbar-track,
 .transcript-body::-webkit-scrollbar-track,
 .task-drawer__list::-webkit-scrollbar-track,
 .page::-webkit-scrollbar-track {
@@ -1751,6 +2274,7 @@ onUnmounted(() => {
 
 .qa-chat::-webkit-scrollbar-thumb,
 .agent-console::-webkit-scrollbar-thumb,
+.media-panel::-webkit-scrollbar-thumb,
 .transcript-body::-webkit-scrollbar-thumb,
 .task-drawer__list::-webkit-scrollbar-thumb,
 .page::-webkit-scrollbar-thumb {
@@ -1762,6 +2286,7 @@ onUnmounted(() => {
 
 .qa-chat::-webkit-scrollbar-thumb:hover,
 .agent-console::-webkit-scrollbar-thumb:hover,
+.media-panel::-webkit-scrollbar-thumb:hover,
 .transcript-body::-webkit-scrollbar-thumb:hover,
 .task-drawer__list::-webkit-scrollbar-thumb:hover,
 .page::-webkit-scrollbar-thumb:hover {
@@ -1771,6 +2296,7 @@ onUnmounted(() => {
 
 .qa-chat,
 .agent-console,
+.media-panel,
 .transcript-body,
 .task-drawer__list,
 .page {
