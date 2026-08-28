@@ -55,9 +55,11 @@ curl.exe http://127.0.0.1:2022/
 
 配置视频号解析所需元宝 Cookie（可选，但解析分享链接前必须）：
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/configure-wx-cookie.ps1
-```
+- 前端方式：打开 `agent设置` → `Cookie 设置` → `元宝 Cookie` 粘贴保存。
+- 脚本方式：
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/configure-wx-cookie.ps1
+  ```
 
 ### 2.3 执行数据库迁移
 

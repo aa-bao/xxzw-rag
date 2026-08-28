@@ -33,13 +33,15 @@ docker compose up -d --build
 
 RAG 的“输入链接解析视频号”依赖元宝（yuanbao.tencent.com）Cookie。
 获取方式：浏览器登录 <https://yuanbao.tencent.com>，F12 -> Network
-复制任意请求的 `Cookie` 请求头，然后执行：
+复制任意请求的 `Cookie` 请求头，然后：
 
-```powershell
-powershell -NoProfile -ExecutionPolicy Bypass -File scripts/configure-wx-cookie.ps1
-```
+- 前端方式：打开 `agent设置` → `Cookie 设置` → `元宝 Cookie` 粘贴保存。
+- 脚本方式：
+  ```powershell
+  powershell -NoProfile -ExecutionPolicy Bypass -File scripts/configure-wx-cookie.ps1
+  ```
 
-脚本会把 Cookie 写入容器 `/data/cookies.json`，无需重启即可生效。
+脚本会把 Cookie 直接写入共享目录 `rag-service/wx-cookies/cookies.json`，无需重启即可生效。
 
 也可以手动编辑容器数据卷中的 `config.yaml` 的 `cloudflare.sphCookie`
 后重启服务：

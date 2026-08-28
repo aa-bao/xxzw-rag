@@ -14,12 +14,17 @@ web/dist/
 
 # 本地开发 / 工具生成
 rag-service/cookies.txt
+rag-service/cookies_douyin.txt
+rag-service/cookies_douyin.txt.bak
+rag-service/wx-cookies/cookies.json
+rag-service/wx-cookies/cookies.json.bak
 .serena/
 test/
 .worktrees/
 
 # Agent 工具本地状态（不入库）
 .agents/
+.agent-teams/
 .claude/
 .codex/
 .workbuddy/

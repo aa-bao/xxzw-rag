@@ -66,9 +66,12 @@ export interface SubmitResult {
   status: string
 }
 
-/** 提交 URL 解析任务（content_type: auto | video | image_text） */
-export async function submitUrlTask(source: string, frames = 12, content_type = 'auto'): Promise<VideoTask> {
-  const resp = await client.post<VideoTask>('/video/tasks', { source, kind: 'url', frames, content_type })
+/** 视频链接来源渠道 */
+export type VideoChannel = 'auto' | 'douyin' | 'bilibili' | 'weixin' | 'xiaohongshu' | 'other'
+
+/** 提交 URL 解析任务（channel 由前端自动识别/用户选择，后端按渠道分流） */
+export async function submitUrlTask(source: string, frames = 12, channel: VideoChannel = 'auto'): Promise<VideoTask> {
+  const resp = await client.post<VideoTask>('/video/tasks', { source, kind: 'url', frames, channel })
   return resp.data
 }
 
@@ -145,7 +148,7 @@ export function libraryReportUrl(taskDir: string): string {
   return applicationUrl('/api/video/library/' + encodeURIComponent(taskDir) + '/report.html')
 }
 
-// ── agent设置 ──
+// ── AI 视频设置 ──
 
 export interface VideoEnvInfo {
   pipeline?: string
@@ -212,13 +215,13 @@ export async function getVideoEnv(): Promise<VideoEnvInfo> {
   return resp.data
 }
 
-/** 读取视频 agent 设置 */
+/** 读取 AI 视频设置 */
 export async function getVideoSettings(): Promise<VideoSettings> {
   const resp = await client.get<VideoSettings>('/video/settings')
   return resp.data
 }
 
-/** 更新视频 agent 设置 */
+/** 更新 AI 视频设置 */
 export async function updateVideoSettings(settings: VideoSettingsUpdate): Promise<VideoSettings> {
   const resp = await client.put<VideoSettings>('/video/settings', settings)
   return resp.data
@@ -227,6 +230,42 @@ export async function updateVideoSettings(settings: VideoSettingsUpdate): Promis
 /** 测试连接（asr / chat） */
 export async function testVideoSettings(body: VideoSettingsTestRequest): Promise<VideoSettingsTestResult> {
   const resp = await client.post<VideoSettingsTestResult>('/video/settings/test', body)
+  return resp.data
+}
+
+// ── Cookie 设置 ──
+
+/** Cookie 状态（接口不回显 Cookie 明文） */
+export interface VideoCookieStatus {
+  configured: boolean
+  path: string
+  cookie_count: number
+  domains: string[]
+  updated_at: string | null
+  error?: string | null
+}
+
+/** 抖音 / 元宝 Cookie 状态汇总 */
+export interface VideoCookies {
+  douyin: VideoCookieStatus
+  yuanbao: VideoCookieStatus
+}
+
+/** 读取抖音 / 元宝 Cookie 状态 */
+export async function getVideoCookies(): Promise<VideoCookies> {
+  const resp = await client.get<VideoCookies>('/video/cookies')
+  return resp.data
+}
+
+/** 保存抖音 Cookie（Netscape 格式） */
+export async function saveDouyinCookies(content: string): Promise<VideoCookieStatus> {
+  const resp = await client.put<VideoCookieStatus>('/video/cookies/douyin', { content })
+  return resp.data
+}
+
+/** 保存元宝 Cookie（F12 Cookie Header） */
+export async function saveYuanbaoCookies(cookie: string): Promise<VideoCookieStatus> {
+  const resp = await client.put<VideoCookieStatus>('/video/cookies/yuanbao', { cookie })
   return resp.data
 }
 
@@ -257,7 +296,7 @@ export function taskAudioUrl(taskId: string, download = false): string {
   return download ? url + '?download=1' : url
 }
 
-/** 视频 Agent 头像 URL（后端静态资源） */
+/** AI 视频头像 URL（后端静态资源） */
 export function agentAvatarUrl(): string {
   return applicationUrl('/api/video/agent-avatar')
 }

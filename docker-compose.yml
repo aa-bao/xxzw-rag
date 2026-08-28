@@ -28,6 +28,7 @@ services:
       - "127.0.0.1:2023:2023"
     volumes:
       - wxchannels:/data
+      - ./rag-service/wx-cookies:/cookies
     healthcheck:
       test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:2022/"]
       interval: 10s
@@ -69,6 +70,7 @@ services:
       - uploads:/opt/tyt-rpa/app/data/uploads
       - chroma:/opt/tyt-rpa/app/data/chroma
       - fts:/opt/tyt-rpa/app/data/fts
+      - ./rag-service/wx-cookies:/opt/tyt-rpa/app/wx-cookies
 
   web:
     build:

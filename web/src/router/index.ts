@@ -34,7 +34,7 @@ const router = createRouter({
           path: 'video',
           name: 'video-analysis',
           component: () => import('../views/VideoAnalysisView.vue'),
-          meta: { title: '视频分析 agent' },
+          meta: { title: 'AI 视频分析' },
         },
         {
           path: 'video/library',
@@ -70,7 +70,7 @@ const router = createRouter({
           path: 'settings/video',
           name: 'video-settings',
           component: () => import('../views/VideoSettingsView.vue'),
-          meta: { title: 'agent设置' },
+          meta: { title: 'AI 视频设置' },
         },
         {
           path: 'settings/mapping-templates',

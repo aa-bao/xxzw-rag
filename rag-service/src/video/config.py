@@ -37,6 +37,18 @@ DEFAULT_COOKIE_FILE = Path(os.environ.get(
     str(Path(__file__).resolve().parent.parent.parent / "cookies.txt"),
 )).expanduser()
 
+# 抖音专用 yt-dlp cookie 文件（由设置页写入；抖音链接优先使用，不覆盖通用 cookies.txt）
+DEFAULT_DOUYIN_COOKIE_FILE = Path(os.environ.get(
+    "QUICK_WATCH_DOUYIN_COOKIE_FILE",
+    str(Path(__file__).resolve().parent.parent.parent / "cookies_douyin.txt"),
+)).expanduser()
+
+# 元宝 cookie 文件：与 wx-channels 共享目录（Docker 挂载 rag-service/wx-cookies -> /cookies）
+DEFAULT_WX_COOKIE_FILE = Path(os.environ.get(
+    "WX_CHANNELS_COOKIE_FILE",
+    str(Path(__file__).resolve().parent.parent.parent / "wx-cookies" / "cookies.json"),
+)).expanduser()
+
 
 @dataclass(frozen=True)
 class VideoConfig:
@@ -47,6 +59,8 @@ class VideoConfig:
     upload_dir: Path
     library_root: Path
     cookie_file: Path | None
+    douyin_cookie_file: Path
+    wx_cookie_file: Path
     python: str
 
     @classmethod
@@ -59,6 +73,14 @@ class VideoConfig:
         cookie_file = DEFAULT_COOKIE_FILE
         if not cookie_file.is_file():
             cookie_file = None
+        douyin_cookie_file = Path(os.environ.get(
+            "QUICK_WATCH_DOUYIN_COOKIE_FILE",
+            str(DEFAULT_DOUYIN_COOKIE_FILE),
+        )).expanduser()
+        wx_cookie_file = Path(os.environ.get(
+            "WX_CHANNELS_COOKIE_FILE",
+            str(DEFAULT_WX_COOKIE_FILE),
+        )).expanduser()
 
         # 本机 Python：优先 venv 的 python，其次系统 python
         python = os.environ.get("QUICK_WATCH_PYTHON", "")
@@ -71,5 +93,7 @@ class VideoConfig:
             upload_dir=upload_dir,
             library_root=library_root,
             cookie_file=cookie_file,
+            douyin_cookie_file=douyin_cookie_file,
+            wx_cookie_file=wx_cookie_file,
             python=python,
         )

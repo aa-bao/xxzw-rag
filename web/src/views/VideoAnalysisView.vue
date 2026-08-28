@@ -1,10 +1,10 @@
-<!-- 视频分析 Agent：左侧实时执行过程控制台 + 右侧结果/多轮问答 -->
+<!-- AI 视频分析：左侧实时执行过程控制台 + 右侧结果/多轮问答 -->
 <template>
   <div class="page video-page">
     <header class="page__header">
       <div class="page__heading">
-        <h1 class="page__title">视频分析 Agent</h1>
-        <span class="page__subtitle">先提交视频，左侧实时展示 Agent 每一步执行过程，右侧查看结果并继续追问</span>
+        <h1 class="page__title">AI 视频分析</h1>
+        <span class="page__subtitle">支持 bilibili、抖音、微信视频号、小红书图文等，提交后实时展示每一步解析过程</span>
       </div>
       <div class="page__actions">
         <el-button text class="btn-press" @click="showTasks = !showTasks">
@@ -34,10 +34,17 @@
               <el-option :value="12" label="12 帧（默认）" />
               <el-option :value="24" label="24 帧（详细）" />
             </el-select>
-            <el-select v-model="contentType" class="content-type-select" aria-label="内容类型">
-              <el-option value="auto" label="自动识别" />
-              <el-option value="video" label="视频" />
-              <el-option value="image_text" label="图文" />
+            <el-select
+              v-model="channel"
+              class="channel-select"
+              aria-label="平台渠道"
+              placeholder="自动识别/选择平台"
+            >
+              <el-option value="douyin" label="抖音" />
+              <el-option value="bilibili" label="B站" />
+              <el-option value="weixin" label="微信视频号" />
+              <el-option value="xiaohongshu" label="小红书" />
+              <el-option value="other" label="其他" />
             </el-select>
             <el-button
               type="primary"
@@ -50,7 +57,7 @@
               开始解析
             </el-button>
           </div>
-          <div class="input-hint">支持直接粘贴分享文案，系统会自动提取其中的视频链接；Agent 每一步都会实时展示。</div>
+          <div class="input-hint">支持 bilibili、抖音、微信视频号、小红书图文等链接；直接粘贴分享文案也会自动提取链接，解析过程实时展示。</div>
         </el-tab-pane>
 
         <el-tab-pane label="本地上传" name="file">
@@ -91,20 +98,20 @@
       </el-tabs>
     </section>
 
-    <!-- 未选择任务时的 Agent 控制台占位 -->
-    <section v-if="!active" class="agent-empty card glass-surface" aria-label="Agent 控制台">
+    <!-- 未选择任务时的 AI 控制台占位 -->
+    <section v-if="!active" class="agent-empty card glass-surface" aria-label="AI 控制台">
       <el-icon class="agent-empty__icon" aria-hidden="true"><VideoPlay /></el-icon>
-      <h2 class="agent-empty__title">Agent 执行控制台</h2>
+      <h2 class="agent-empty__title">AI 执行控制台</h2>
       <p class="agent-empty__text">提交一个视频链接或本地文件后，这里会实时展示完整的解析流程：获取视频 → 字幕/音频 → 语音转写 → 关键帧 → 画面理解 → 摘要 → 报告。</p>
     </section>
 
     <!-- 任务详情：左侧执行过程 + 右侧结果 -->
     <section v-if="active" class="agent-layout">
-      <!-- 左侧：Agent 执行过程 -->
-      <aside class="card glass-surface agent-console" aria-label="Agent 执行过程">
+      <!-- 左侧：AI 执行过程 -->
+      <aside class="card glass-surface agent-console" aria-label="AI 执行过程">
         <div class="console-head">
           <div>
-            <h2 class="card__title">Agent 执行过程</h2>
+            <h2 class="card__title">AI 执行过程</h2>
             <p class="console-sub">{{ consoleSubtitle }}</p>
           </div>
           <el-tag :type="statusType(active.status)" size="small" effect="dark" class="console-status">
@@ -129,7 +136,7 @@
 
         <div class="phase-list">
           <div v-if="!pipelinePhases.length" class="phase-list-empty">
-            正在等待 Agent 启动第一步…
+            正在等待 AI 启动第一步…
           </div>
           <div
             v-for="phase in pipelinePhases"
@@ -242,11 +249,11 @@
             </div>
             <div v-for="(msg, i) in qaMessages" :key="i" class="qa-msg" :class="msg.role === 'user' ? 'qa-msg--user' : 'qa-msg--assistant'">
               <div v-if="msg.role === 'user'" class="qa-msg__role">你</div>
-              <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+              <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="AI" />
               <div class="qa-msg__bubble">{{ msg.content }}</div>
             </div>
             <div v-if="qaStreaming" class="qa-msg qa-msg--assistant">
-              <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+              <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="AI" />
               <div class="qa-msg__bubble qa-msg__bubble--streaming">
                 <span v-if="!qaStreamingText" class="qa-typing">
                   <span class="qa-typing__dot"></span>
@@ -350,11 +357,11 @@
                 </div>
                 <div v-for="(msg, i) in qaMessages" :key="i" class="qa-msg" :class="msg.role === 'user' ? 'qa-msg--user' : 'qa-msg--assistant'">
                   <div v-if="msg.role === 'user'" class="qa-msg__role">你</div>
-                  <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+                  <img v-else :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="AI" />
                   <div class="qa-msg__bubble">{{ msg.content }}</div>
                 </div>
                 <div v-if="qaStreaming" class="qa-msg qa-msg--assistant">
-                  <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="Agent" />
+                  <img :src="agentAvatarUrl" class="qa-msg__avatar-img" alt="AI" />
                   <div class="qa-msg__bubble qa-msg__bubble--streaming">
                     <span v-if="!qaStreamingText" class="qa-typing">
                       <span class="qa-typing__dot"></span>
@@ -382,7 +389,7 @@
           </div>
 
           <div v-else-if="active.status === 'running' || active.status === 'submitted'" class="results-running">
-            <p class="results-running__text">正在解析中，左侧可实时查看 Agent 执行步骤；完成后这里会展示摘要、关键帧、转录与问答。</p>
+            <p class="results-running__text">正在解析中，左侧可实时查看 AI 执行步骤；完成后这里会展示摘要、关键帧、转录与问答。</p>
             <div v-if="active.keyframes.length" class="frame-section">
               <h3 class="section-title">已提取关键帧</h3>
               <div class="frame-grid">
@@ -502,7 +509,7 @@
 </template>
 
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { ElMessage } from 'element-plus'
 import { ChatDotRound, CircleCheck, CircleClose, Document, Download, FolderOpened, Loading, Minus, Promotion, Refresh, UploadFilled, VideoPlay, WarningFilled } from '@element-plus/icons-vue'
 import {
@@ -521,6 +528,7 @@ import {
   taskEventUrl,
   taskVideoUrl,
   uploadVideoFile,
+  type VideoChannel,
   type VideoPipelineEvent,
   type VideoQaMessage,
   type VideoTask,
@@ -530,7 +538,14 @@ import { streamSse } from '../api/sse'
 const inputMode = ref<'url' | 'file'>('url')
 const urlInput = ref('')
 const frames = ref(12)
-const contentType = ref<'auto' | 'video' | 'image_text'>('auto')
+const channel = ref<VideoChannel>('auto')
+const CHANNEL_OPTIONS: Array<{ value: VideoChannel; label: string }> = [
+  { value: 'douyin', label: '抖音' },
+  { value: 'bilibili', label: 'B站' },
+  { value: 'weixin', label: '微信视频号' },
+  { value: 'xiaohongshu', label: '小红书' },
+  { value: 'other', label: '其他' },
+]
 const localFile = ref<File | null>(null)
 const submitting = ref(false)
 
@@ -604,15 +619,38 @@ function extractUrlFromText(text: string): string {
   return match[0].replace(/[),.;!?，。；：！？、）》】"'”’]+$/, '')
 }
 
-/** 粘贴分享文案时自动提取链接，避免把整段文案提交给后端 */
+/** 根据 URL 域名识别平台渠道；识别不到时返回 other */
+function detectChannelFromUrl(url: string): VideoChannel | null {
+  const value = (url || '').toLowerCase()
+  if (!value) return null
+  if (/douyin\.com|iesdouyin\.com|v\.douyin\.com/.test(value)) return 'douyin'
+  if (/bilibili\.com|b23\.tv/.test(value)) return 'bilibili'
+  if (/weixin\.qq\.com\/sph|channels\.weixin\.qq\.com/.test(value)) return 'weixin'
+  if (/xiaohongshu\.com|xhslink\.com/.test(value)) return 'xiaohongshu'
+  if (/^https?:\/\//.test(value)) return 'other'
+  return null
+}
+
+function channelLabel(value: VideoChannel): string {
+  return CHANNEL_OPTIONS.find((item) => item.value === value)?.label ?? '未知平台'
+}
+
+/** 粘贴分享文案时自动提取链接，并识别平台渠道 */
 function handleUrlPaste(event: ClipboardEvent) {
   const text = event.clipboardData?.getData('text') || ''
   const url = extractUrlFromText(text)
   if (url && url !== text.trim()) {
     event.preventDefault()
     urlInput.value = url
-    ElMessage.success('已自动提取链接')
+    applyDetectedChannel(url)
   }
+}
+
+function applyDetectedChannel(url: string) {
+  const detected = detectChannelFromUrl(url)
+  if (!detected) return
+  channel.value = detected
+  ElMessage.success(`已识别为${channelLabel(detected)}链接`)
 }
 
 async function handleSubmit() {
@@ -624,10 +662,14 @@ async function handleSubmit() {
     urlInput.value = source
     ElMessage.success('已自动提取链接')
   }
+  if (channel.value === 'auto') {
+    applyDetectedChannel(source)
+  }
   submitting.value = true
   try {
-    const task = await submitUrlTask(source, frames.value, contentType.value)
+    const task = await submitUrlTask(source, frames.value, channel.value)
     urlInput.value = ''
+    channel.value = 'auto'
     await refreshTasks()
     selectTask(task)
   } catch (err) {
@@ -636,6 +678,14 @@ async function handleSubmit() {
     submitting.value = false
   }
 }
+
+watch(urlInput, (value) => {
+  const detected = detectChannelFromUrl(extractUrlFromText(value))
+  if (detected && detected !== channel.value) {
+    channel.value = detected
+    ElMessage.success(`已识别为${channelLabel(detected)}链接`)
+  }
+})
 
 function handleFileChange(file: { raw: File }) {
   localFile.value = file.raw
@@ -1233,7 +1283,7 @@ onUnmounted(() => {
   flex-shrink: 0;
 }
 
-.content-type-select {
+.channel-select {
   width: 130px;
   flex-shrink: 0;
 }
@@ -1390,7 +1440,7 @@ onUnmounted(() => {
   background: color-mix(in srgb, var(--danger, #f56c6c) 8%, transparent);
 }
 
-/* ── Agent 空状态 ── */
+/* ── AI 空状态 ── */
 .agent-empty {
   margin-top: 20px;
   padding: 64px 24px;

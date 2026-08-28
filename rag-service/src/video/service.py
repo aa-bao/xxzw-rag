@@ -120,6 +120,14 @@ class VideoTaskManager:
             encoding="utf-8",
         )
 
+    def _cookie_file_for(self, source: str) -> Path | None:
+        """按来源选择 yt-dlp cookie 文件：抖音优先专用文件，缺失回退通用文件。"""
+        if acquire.is_douyin_url(source):
+            douyin = self._config.douyin_cookie_file
+            if douyin.is_file():
+                return douyin
+        return self._config.cookie_file
+
     # ── MySQL 镜像（文件系统仍是实时状态源，DB 用于存档/统计） ──
 
     async def persist_to_db(self, state: dict[str, Any] | str) -> None:
@@ -264,11 +272,13 @@ class VideoTaskManager:
     # ── 任务提交 ──
 
     def submit(
-        self, source: str, *, kind: str = "url", frames: int = 12, content_type: str = "auto"
+        self, source: str, *, kind: str = "url", frames: int = 12,
+        content_type: str = "auto", channel: str = "auto",
     ) -> dict[str, Any]:
         """登记新任务并返回初始状态。调用方（router）负责启动后台执行。
 
         content_type: auto | video | image_text
+        channel: auto | douyin | bilibili | weixin | xiaohongshu | other
         """
         task_id = uuid.uuid4().hex[:16]
         state: dict[str, Any] = {
@@ -276,6 +286,7 @@ class VideoTaskManager:
             "source": source,
             "kind": kind,
             "content_type": content_type,
+            "channel": channel,
             "status": STATUS_SUBMITTED,
             "created_at": datetime.now(UTC).isoformat(timespec="seconds"),
             "updated_at": datetime.now(UTC).isoformat(timespec="seconds"),
@@ -308,12 +319,14 @@ class VideoTaskManager:
     # ── 后台执行 ──
 
     async def run(
-        self, task_id: str, source: str, *, frames: int = 12, kind: str = "url", content_type: str = "auto"
+        self, task_id: str, source: str, *, frames: int = 12, kind: str = "url",
+        content_type: str = "auto", channel: str = "auto",
     ) -> None:
         try:
             await asyncio.wait_for(
                 self._run_pipeline(
-                    task_id, source, frames=frames, kind=kind, content_type=content_type
+                    task_id, source, frames=frames, kind=kind,
+                    content_type=content_type, channel=channel,
                 ),
                 timeout=_TASK_TIMEOUT_SECONDS,
             )
@@ -326,7 +339,8 @@ class VideoTaskManager:
             await self._fail(task_id, f"任务执行异常: {exc}")
 
     async def _run_pipeline(
-        self, task_id: str, source: str, *, frames: int, kind: str, content_type: str = "auto"
+        self, task_id: str, source: str, *, frames: int, kind: str,
+        content_type: str = "auto", channel: str = "auto",
     ) -> None:
         state = self._load(task_id)
         if state is None:
@@ -334,6 +348,7 @@ class VideoTaskManager:
         state["status"] = STATUS_RUNNING
         state["stage"] = "starting"
         state["content_type"] = content_type or "auto"
+        state["channel"] = channel or "auto"
         self._save(state)
         self._emit_event(
             task_id, "starting", "启动解析",
@@ -349,9 +364,9 @@ class VideoTaskManager:
         self._save(state)
         started = time.perf_counter()
 
-        # 先识别内容类型：自动/视频/图文
+        # 先识别内容类型：按用户选择的渠道分流，避免对所有平台做不可靠的自动探测
         resolved_type = await self._resolve_content_type(
-            task_id, source, kind, content_type,
+            task_id, source, kind, content_type, channel=channel,
             output_root=output_root,
             state=state,
         )
@@ -474,19 +489,35 @@ class VideoTaskManager:
         kind: str,
         content_type: str,
         *,
+        channel: str = "auto",
         output_root: Path,
         state: dict[str, Any],
     ) -> str:
-        """自动识别视频/图文；已指定类型则直接返回。"""
+        """按用户选择的渠道决定内容类型；只有混合渠道才需要内部探测。
+
+        - 抖音 / B站 / 微信视频号 / 其他：直接按视频处理。
+        - 小红书：图文和视频共用入口，内部用 yt-dlp 探测一次。
+        - 未指定渠道时保留旧自动探测逻辑作为兜底。
+        """
         if kind == "file":
             return "video"
         if content_type in ("video", "image_text"):
             return content_type
 
+        video_only_channels = {"douyin", "bilibili", "weixin", "other"}
+        if channel in video_only_channels:
+            self._emit_event(
+                task_id, "detected", "按渠道处理",
+                f"已选择 {channel} 渠道，直接按视频解析。",
+                level="success",
+                data={"content_type": "video", "channel": channel},
+            )
+            return "video"
+
         self._update_stage(task_id, "detecting")
         self._emit_event(
             task_id, "detecting", "识别内容类型",
-            "正在自动判断该链接是视频还是图文…",
+            "该渠道可能包含视频或图文，正在自动判断…",
         )
         try:
             info = await asyncio.to_thread(
@@ -494,7 +525,7 @@ class VideoTaskManager:
                 source,
                 45.0,
                 referer=source,
-                cookies=self._config.cookie_file,
+                cookies=self._cookie_file_for(source),
                 no_proxy=acquire.is_weixin_sph_url(source),
             )
             detected = acquire.classify_media_type(info)
@@ -539,7 +570,7 @@ class VideoTaskManager:
             source,
             60.0,
             referer=source,
-            cookies=self._config.cookie_file,
+            cookies=self._cookie_file_for(source),
             no_proxy=acquire.is_weixin_sph_url(source),
         )
         meta = acquire.extract_image_post_meta(info)
@@ -552,7 +583,7 @@ class VideoTaskManager:
             images_dir,
             120.0,
             referer=source,
-            cookies=self._config.cookie_file,
+            cookies=self._cookie_file_for(source),
         )
 
         state = self._load(task_id) or {}
@@ -732,7 +763,7 @@ class VideoTaskManager:
                         work / "captions",
                         45.0,
                         no_proxy=acquire.is_weixin_sph_url(source),
-                        cookies=self._config.cookie_file,
+                        cookies=self._cookie_file_for(source),
                     )
                 except Exception as exc:  # noqa: BLE001
                     caption = {"transcript": "", "cues": [], "duration": 0.0, "error": str(exc)}
@@ -777,7 +808,7 @@ class VideoTaskManager:
                             direct_source,
                             work,
                             300.0,
-                            self._config.cookie_file,
+                            self._cookie_file_for(source),
                             download_referer,
                             (
                                 (lambda: str(acquire.resolve_weixin_source(source, 30.0)["url"]))
@@ -1115,7 +1146,7 @@ class VideoTaskManager:
                     video_out_dir,
                     300.0,
                     referer=referer,
-                    cookies=browser_cookies or self._config.cookie_file,
+                    cookies=browser_cookies or self._cookie_file_for(source),
                     max_height=360,
                     no_proxy=acquire.is_weixin_sph_url(source),
                 )
@@ -1512,12 +1543,14 @@ class VideoTaskManager:
     # ── 启动 / 停止 ──
 
     def start_background(
-        self, task_id: str, source: str, *, frames: int = 12, kind: str = "url", content_type: str = "auto"
+        self, task_id: str, source: str, *, frames: int = 12, kind: str = "url",
+        content_type: str = "auto", channel: str = "auto",
     ) -> None:
         """启动后台任务（在事件循环内调度）。"""
         loop = asyncio.get_event_loop()
         task = loop.create_task(
-            self.run(task_id, source, frames=frames, kind=kind, content_type=content_type)
+            self.run(task_id, source, frames=frames, kind=kind,
+                     content_type=content_type, channel=channel)
         )
         self._running[task_id] = task
         task.add_done_callback(lambda _t: self._running.pop(task_id, None))

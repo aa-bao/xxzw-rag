@@ -34,6 +34,7 @@ from src.db.repositories import VideoTaskRepository
 from src.platform.principal import PERMISSION_SETTINGS_MANAGE, ProjectPrincipal
 from src.shared.errors import AppError
 from src.video import asr as video_asr
+from src.video.cookies import get_cookie_status, save_douyin_cookie, save_yuanbao_cookie
 from src.video.service import STATUS_COMPLETE, VideoTaskManager
 from src.video.settings import VideoAgentSettings
 from src.video.summary import make_chat_client
@@ -52,6 +53,7 @@ class SubmitTaskRequest(BaseModel):
     kind: str = Field(default="url", pattern="^(url|file)$")
     frames: int = Field(default=12, ge=0, le=48)
     content_type: str = Field(default="auto", pattern="^(auto|video|image_text)$")
+    channel: str = Field(default="auto", pattern="^(auto|douyin|bilibili|weixin|xiaohongshu|other)$")
 
 
 class QaRequest(BaseModel):
@@ -89,6 +91,16 @@ class TestVideoSettingsRequest(BaseModel):
     qa_model: str | None = None
     qa_base_url: str | None = None
     qa_api_key: str | None = None
+
+
+class UpdateDouyinCookieRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    content: str = Field(min_length=1, max_length=100_000)
+
+
+class UpdateYuanbaoCookieRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+    cookie: str = Field(min_length=1, max_length=100_000)
 
 
 def _manager(request: Request) -> VideoTaskManager:
@@ -268,12 +280,13 @@ async def submit_task(
             raise AppError("VIDEO_BAD_URL", "仅支持 http/https 视频链接", status_code=400)
 
     state = manager.submit(
-        source, kind=body.kind, frames=body.frames, content_type=body.content_type
+        source, kind=body.kind, frames=body.frames,
+        content_type=body.content_type, channel=body.channel,
     )
     await manager.persist_to_db(state)
     manager.start_background(
         state["task_id"], source, frames=body.frames, kind=body.kind,
-        content_type=body.content_type,
+        content_type=body.content_type, channel=body.channel,
     )
     return {"success": True, "data": state}
 
@@ -488,6 +501,46 @@ async def test_video_settings(
     except Exception as exc:
         message = getattr(exc, "message", None) or str(exc) or "连接失败"
         return {"success": True, "data": {"ok": False, "message": message}}
+
+
+@router.get("/cookies")
+async def get_video_cookies(
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_SETTINGS_MANAGE)),
+) -> dict[str, object]:
+    """读取抖音/元宝 Cookie 状态元信息（不返回 Cookie 明文）。"""
+    config = _manager(request)._config
+    return {"success": True, "data": get_cookie_status(config.douyin_cookie_file, config.wx_cookie_file)}
+
+
+@router.put("/cookies/douyin")
+async def update_douyin_cookie(
+    body: UpdateDouyinCookieRequest,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_SETTINGS_MANAGE)),
+) -> dict[str, object]:
+    """写入抖音 Netscape Cookie 文件；非法格式返回 400。"""
+    config = _manager(request)._config
+    try:
+        result = save_douyin_cookie(body.content, config.douyin_cookie_file)
+    except ValueError as exc:
+        raise AppError("VIDEO_COOKIE_INVALID", str(exc), status_code=400) from exc
+    return {"success": True, "data": result}
+
+
+@router.put("/cookies/yuanbao")
+async def update_yuanbao_cookie(
+    body: UpdateYuanbaoCookieRequest,
+    request: Request,
+    principal: ProjectPrincipal = Depends(require_permission(PERMISSION_SETTINGS_MANAGE)),
+) -> dict[str, object]:
+    """写入元宝 Cookie Header；非法格式返回 400。"""
+    config = _manager(request)._config
+    try:
+        result = save_yuanbao_cookie(body.cookie, config.wx_cookie_file)
+    except ValueError as exc:
+        raise AppError("VIDEO_COOKIE_INVALID", str(exc), status_code=400) from exc
+    return {"success": True, "data": result}
 
 
 @router.get("/library")

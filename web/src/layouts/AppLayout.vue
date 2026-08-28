@@ -130,7 +130,7 @@ const navGroups = computed<NavGroup[]>(() => {
     { name: 'kb-list', label: '知识库', icon: Files },
   ]
   const videoItems: NavItem[] = [
-    { name: 'video-analysis', label: '视频分析 agent', icon: VideoPlay },
+    { name: 'video-analysis', label: 'AI 视频分析', icon: VideoPlay },
     { name: 'video-library', label: '视频库', icon: FolderOpened },
   ]
   const joomItems: NavItem[] = [
@@ -139,7 +139,7 @@ const navGroups = computed<NavGroup[]>(() => {
   const systemItems: NavItem[] = [
     { name: 'system-settings', label: '系统设置', icon: Monitor },
     { name: 'kb-settings', label: '知识库设置', icon: Setting },
-    { name: 'video-settings', label: 'agent设置', icon: Tools },
+    { name: 'video-settings', label: 'AI 视频设置', icon: Tools },
     { name: 'mapping-templates', label: '映射模板', icon: CopyDocument },
   ]
   if (!userManagementHidden) {

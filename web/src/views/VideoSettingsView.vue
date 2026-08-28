@@ -1,9 +1,9 @@
-<!-- agent设置：视频解析 agent 的语音模型 / Chat 模型 / 解析偏好 / 运行环境 -->
+<!-- AI 视频设置：AI 视频解析的语音模型 / Chat 模型 / 解析偏好 / 运行环境 -->
 <template>
   <div class="page settings-page">
     <header class="page__header">
-      <h1 class="page__title">agent设置</h1>
-      <span class="page__subtitle">视频解析 agent 的模型配置与环境信息</span>
+      <h1 class="page__title">AI 视频设置</h1>
+      <span class="page__subtitle">AI 视频解析的模型配置与环境信息</span>
     </header>
 
     <div class="settings-grid">
@@ -152,6 +152,69 @@
       </el-form>
     </section>
 
+    <!-- Cookie 设置 -->
+    <section class="card glass-surface cookie-card" aria-label="Cookie 设置">
+      <div class="card__head">
+        <h2 class="card__title">Cookie 设置</h2>
+        <span class="card__badge">抖音 / 元宝</span>
+      </div>
+      <p class="card__hint">在线更新解析所需平台 Cookie；保存后直接写入共享文件，接口不展示 Cookie 明文。</p>
+
+      <div class="cookie-grid">
+        <div class="cookie-block">
+          <div class="cookie-block__head">
+            <span class="cookie-block__title">抖音 Cookie</span>
+            <el-tag size="small" :type="cookieStatus.douyin.configured ? 'success' : 'info'">
+              {{ cookieStatus.douyin.configured ? '已配置' : '未配置' }}
+            </el-tag>
+          </div>
+          <div class="cookie-block__status">
+            <span>Cookie 数：{{ cookieStatus.douyin.cookie_count }}</span>
+            <span>域名：{{ cookieStatus.douyin.domains.length ? cookieStatus.douyin.domains.join('、') : '—' }}</span>
+            <span>更新时间：{{ cookieStatus.douyin.updated_at || '—' }}</span>
+          </div>
+          <el-input
+            v-model="douyinCookieText"
+            type="textarea"
+            :rows="6"
+            placeholder="粘贴 Netscape 格式 Cookie（含 # Netscape HTTP Cookie File 头或 douyin.com 域名行）"
+            class="cookie-textarea"
+          />
+          <div class="cookie-block__actions">
+            <el-button type="primary" class="btn-press" :loading="savingDouyinCookie" @click="saveDouyinCookie">
+              保存抖音 Cookie
+            </el-button>
+          </div>
+        </div>
+
+        <div class="cookie-block">
+          <div class="cookie-block__head">
+            <span class="cookie-block__title">元宝 Cookie</span>
+            <el-tag size="small" :type="cookieStatus.yuanbao.configured ? 'success' : 'info'">
+              {{ cookieStatus.yuanbao.configured ? '已配置' : '未配置' }}
+            </el-tag>
+          </div>
+          <div class="cookie-block__status">
+            <span>Cookie 数：{{ cookieStatus.yuanbao.cookie_count }}</span>
+            <span>域名：{{ cookieStatus.yuanbao.domains.length ? cookieStatus.yuanbao.domains.join('、') : '—' }}</span>
+            <span>更新时间：{{ cookieStatus.yuanbao.updated_at || '—' }}</span>
+          </div>
+          <el-input
+            v-model="yuanbaoCookieText"
+            type="textarea"
+            :rows="6"
+            placeholder="粘贴 F12 请求头 Cookie（name=value; name2=value2）"
+            class="cookie-textarea"
+          />
+          <div class="cookie-block__actions">
+            <el-button type="primary" class="btn-press" :loading="savingYuanbaoCookie" @click="saveYuanbaoCookie">
+              保存元宝 Cookie
+            </el-button>
+          </div>
+        </div>
+      </div>
+    </section>
+
     <!-- 运行环境 -->
     <section class="card glass-surface" aria-label="运行环境">
       <div class="card__head">
@@ -173,10 +236,14 @@
 import { onMounted, reactive, ref } from 'vue'
 import { ElMessage } from 'element-plus'
 import {
+  getVideoCookies,
   getVideoEnv,
   getVideoSettings,
+  saveDouyinCookies,
+  saveYuanbaoCookies,
   testVideoSettings,
   updateVideoSettings,
+  type VideoCookies,
   type VideoEnvInfo,
   type VideoSettings,
 } from '../api/video'
@@ -221,6 +288,15 @@ const chatModelTestOk = ref(false)
 const testingQaModel = ref(false)
 const qaModelTestMsg = ref('')
 const qaModelTestOk = ref(false)
+
+const cookieStatus = ref<VideoCookies>({
+  douyin: { configured: false, path: '', cookie_count: 0, domains: [], updated_at: null },
+  yuanbao: { configured: false, path: '', cookie_count: 0, domains: [], updated_at: null },
+})
+const douyinCookieText = ref('')
+const yuanbaoCookieText = ref('')
+const savingDouyinCookie = ref(false)
+const savingYuanbaoCookie = ref(false)
 
 async function load() {
   try {
@@ -340,11 +416,65 @@ async function testQaModel() {
   }
 }
 
+function getErrorMessage(err: unknown, fallback: string): string {
+  const candidate = err as { error?: { message?: string }; message?: string }
+  return candidate.error?.message || candidate.message || fallback
+}
+
+async function loadCookieStatus() {
+  try {
+    cookieStatus.value = await getVideoCookies()
+  } catch (err) {
+    ElMessage.error(getErrorMessage(err, '加载 Cookie 状态失败'))
+  }
+}
+
+async function saveDouyinCookie() {
+  const content = douyinCookieText.value.trim()
+  if (!content) {
+    ElMessage.warning('请先粘贴抖音 Cookie')
+    return
+  }
+  savingDouyinCookie.value = true
+  try {
+    const updated = await saveDouyinCookies(content)
+    cookieStatus.value = { ...cookieStatus.value, douyin: updated }
+    douyinCookieText.value = ''
+    ElMessage.success('抖音 Cookie 已保存')
+  } catch (err) {
+    ElMessage.error(getErrorMessage(err, '保存抖音 Cookie 失败'))
+  } finally {
+    savingDouyinCookie.value = false
+  }
+}
+
+async function saveYuanbaoCookie() {
+  const cookie = yuanbaoCookieText.value.trim()
+  if (!cookie) {
+    ElMessage.warning('请先粘贴元宝 Cookie')
+    return
+  }
+  savingYuanbaoCookie.value = true
+  try {
+    const updated = await saveYuanbaoCookies(cookie)
+    cookieStatus.value = { ...cookieStatus.value, yuanbao: updated }
+    yuanbaoCookieText.value = ''
+    ElMessage.success('元宝 Cookie 已保存')
+  } catch (err) {
+    ElMessage.error(getErrorMessage(err, '保存元宝 Cookie 失败'))
+  } finally {
+    savingYuanbaoCookie.value = false
+  }
+}
+
 function resetDefaults() {
   form.frames = 12
 }
 
-onMounted(load)
+onMounted(() => {
+  load()
+  loadCookieStatus()
+})
 </script>
 
 <style scoped>
@@ -382,15 +512,11 @@ onMounted(load)
 
 .settings-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
   align-items: start;
-}
-
-@media (max-width: 900px) {
-  .settings-grid {
-    grid-template-columns: 1fr;
-  }
+  max-width: 1080px;
+  margin: 0 auto;
 }
 
 .settings-grid .card {
@@ -430,6 +556,69 @@ onMounted(load)
   font-size: 12.5px;
   line-height: 1.6;
   color: var(--text-tertiary);
+}
+
+.cookie-card {
+  grid-column: 1 / -1;
+}
+
+.cookie-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 16px;
+}
+
+.cookie-block {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border-subtle);
+  border-radius: var(--radius-xl);
+  background: color-mix(in srgb, var(--text-primary) 2%, transparent);
+}
+
+.cookie-block__head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.cookie-block__title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.cookie-block__status {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin-bottom: 10px;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.cookie-textarea {
+  width: 100%;
+}
+
+.cookie-textarea :deep(.el-textarea__inner) {
+  font-family: var(--font-mono, ui-monospace, monospace);
+  font-size: 12px;
+}
+
+.cookie-block__actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 10px;
+}
+
+@media (max-width: 600px) {
+  .cookie-grid {
+    grid-template-columns: 1fr;
+  }
 }
 
 .setting-form {

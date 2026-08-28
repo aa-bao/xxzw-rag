@@ -45,7 +45,7 @@
 
     <section v-else-if="!tasks.length" class="library-empty">
       <el-icon class="empty-icon" aria-hidden="true"><FolderOpened /></el-icon>
-      <p class="empty-text">暂无历史解析任务，去「视频分析 agent」解析第一个视频吧</p>
+      <p class="empty-text">暂无历史解析任务，去「AI 视频分析」解析第一个视频吧</p>
     </section>
 
     <section v-else-if="!filteredTasks.length" class="library-empty">
